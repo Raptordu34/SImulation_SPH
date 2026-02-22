@@ -1,0 +1,88 @@
+/* Grille de fond */
+.bg-grid {
+    background-image:
+        linear-gradient(to right, #1e293b 1px, transparent 1px),
+        linear-gradient(to bottom, #1e293b 1px, transparent 1px);
+    background-size: 40px 40px;
+    background-color: #0f172a;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1e293b; }
+::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* Toolbar buttons */
+.tool-btn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: #94a3b8;
+    transition: all 0.15s;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+}
+.tool-btn:hover {
+    color: #fff;
+    background: rgba(255,255,255,0.1);
+}
+.tool-btn.active {
+    color: #fff;
+    background: #0891b2;
+    box-shadow: 0 0 8px rgba(8,145,178,0.4);
+}
+
+/* Preset buttons */
+.preset-btn {
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: #1e293b;
+    color: #94a3b8;
+    border: 1px solid #334155;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.preset-btn:hover {
+    background: #334155;
+    color: #fff;
+}
+.preset-btn.active {
+    background: #0891b2;
+    color: #fff;
+    border-color: #06b6d4;
+}
+
+/* Tweakpane overrides for dark theme */
+#tweakpane-container .tp-dfwv {
+    width: 100% !important;
+}
+#tweakpane-container .tp-rotv {
+    border-radius: 0 !important;
+    box-shadow: none !important;
+}
+
+/* Recording pulse animation */
+.recording {
+    animation: pulse-red 1s infinite;
+}
+@keyframes pulse-red {
+    0%, 100% { background-color: rgba(185, 28, 28, 0.5); }
+    50% { background-color: rgba(220, 38, 38, 0.9); }
+}
+
+/* Canvas container cursor based on active tool */
+#canvas-container[data-tool="push"] { cursor: crosshair; }
+#canvas-container[data-tool="emitter"] { cursor: cell; }
+#canvas-container[data-tool="drain"] { cursor: cell; }
+#canvas-container[data-tool="wall"] { cursor: crosshair; }
+#canvas-container[data-tool="eraser"] { cursor: pointer; }
+#canvas-container[data-tool="vortex"] { cursor: grab; }
+#canvas-container[data-tool="wind"] { cursor: e-resize; }
+#canvas-container[data-tool="attractor"] { cursor: move; }
