@@ -90,7 +90,9 @@ worker.onmessage = function(e) {
             foamCount: msg.foamCount,
             simFps: msg.simFps || 0,
             multiWorker: msg.multiWorker || false,
-            workerCount: msg.workerCount || 0
+            workerCount: msg.workerCount || 0,
+            rigidBodies: msg.rigidBodies || null,
+            rigidBodyCount: msg.rigidBodyCount ?? 0
         };
     } else if (msg.type === 'wallsUpdated') {
         toolManager.walls = msg.walls;
@@ -142,6 +144,11 @@ function renderLoop(timestamp) {
     // Render WebGL
     renderer.render(dt);
 
+    // Pass rigid body data to tool manager for overlay
+    if (latestFrameData) {
+        toolManager.rigidBodiesData = latestFrameData.rigidBodies;
+        toolManager.rigidBodyCount = latestFrameData.rigidBodyCount ?? 0;
+    }
     // Render overlay (tools, cursors, objects)
     toolManager.renderOverlay();
 }

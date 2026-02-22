@@ -1097,7 +1097,9 @@ function step() {
         computeForces();
     }
 
+    applyRigidBodyForces();
     integrate();
+    integrateRigidBodies();
     updateFoam();
     processEmitters(DT);
 }

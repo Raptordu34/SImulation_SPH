@@ -31,6 +31,16 @@ export class ToolManager {
         this.walls = [];
         this.portalPairs = [];
 
+        // Rigid bodies: placement state
+        this.rigidBodies = [];
+        this.activeShape = 'box';
+        this.isDrawingRigidBody = false;
+        this.rigidBodyStartX = 0;
+        this.rigidBodyStartY = 0;
+        this.nextRigidBodyId = 1;
+        this.rigidBodiesData = null;
+        this.rigidBodyCount = 0;
+
         // Active tool info element
         this.toolInfoEl = document.getElementById('active-tool-info');
 
@@ -58,6 +68,7 @@ export class ToolManager {
             emitter: 'Emetteur',
             drain: 'Drain',
             wall: 'Mur',
+            rigidBody: 'Objet',
             eraser: 'Gomme',
             vortex: 'Vortex',
             wind: 'Vent',
@@ -112,6 +123,12 @@ export class ToolManager {
             };
             if (toolMap[e.key]) {
                 this.setTool(toolMap[e.key]);
+            }
+            // B: cycle rigid body shape (box → circle → triangle)
+            if ((e.key === 'b' || e.key === 'B') && this.activeTool === 'rigidBody') {
+                const shapes = ['box', 'circle', 'triangle'];
+                const idx = shapes.indexOf(this.activeShape);
+                this.activeShape = shapes[(idx + 1) % shapes.length];
             }
         });
         document.addEventListener('keyup', (e) => {
@@ -222,6 +239,25 @@ export class ToolManager {
                 this.wallStartY = pos.y;
                 break;
 
+            case 'rigidBody':
+                if (this.activeShape === 'circle') {
+                    const id = this.nextRigidBodyId++;
+                    this.worker.postMessage({
+                        type: 'addRigidBody',
+                        id,
+                        shapeType: 'circle',
+                        x: pos.x,
+                        y: pos.y,
+                        radius: 25,
+                        density: 2.0
+                    });
+                } else {
+                    this.isDrawingRigidBody = true;
+                    this.rigidBodyStartX = pos.x;
+                    this.rigidBodyStartY = pos.y;
+                }
+                break;
+
             case 'eraser':
                 this._eraseNear(pos);
                 break;
@@ -291,6 +327,44 @@ export class ToolManager {
                 this.worker.postMessage({ type: 'addWall', ...wall });
             }
         }
+        if (this.activeTool === 'rigidBody' && this.isDrawingRigidBody) {
+            this.isDrawingRigidBody = false;
+            const x1 = this.rigidBodyStartX, y1 = this.rigidBodyStartY;
+            const x2 = pos.x, y2 = pos.y;
+            const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+            const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+            // Clic sans glisser → taille par défaut (sinon rien ne s'affiche)
+            const halfW = (w < 10 && h < 10) ? 25 : Math.max(w / 2, 5);
+            const halfH = (w < 10 && h < 10) ? 25 : Math.max(h / 2, 5);
+            const id = this.nextRigidBodyId++;
+            if (this.activeShape === 'box') {
+                this.worker.postMessage({
+                    type: 'addRigidBody',
+                    id,
+                    shapeType: 'box',
+                    x: cx,
+                    y: cy,
+                    halfW,
+                    halfH,
+                    density: 2.0
+                });
+            } else if (this.activeShape === 'triangle') {
+                const localVerts = [
+                    { x: 0, y: -halfH },
+                    { x: -halfW, y: halfH },
+                    { x: halfW, y: halfH }
+                ];
+                this.worker.postMessage({
+                    type: 'addRigidBody',
+                    id,
+                    shapeType: 'triangle',
+                    x: cx,
+                    y: cy,
+                    localVerts,
+                    density: 2.0
+                });
+            }
+        }
     }
 
     _eraseNear(pos) {
@@ -331,6 +405,20 @@ export class ToolManager {
             const d2x = pair.p2.x - pos.x, d2y = pair.p2.y - pos.y;
             return (d1x*d1x + d1y*d1y > eraseR2) && (d2x*d2x + d2y*d2y > eraseR2);
         });
+        // Erase rigid bodies near cursor (by center from frame data)
+        if (this.rigidBodiesData && this.rigidBodyCount > 0) {
+            const F = 16;
+            for (let b = 0; b < this.rigidBodyCount; b++) {
+                const off = b * F;
+                const bx = this.rigidBodiesData[off + 2];
+                const by = this.rigidBodiesData[off + 3];
+                const dx = pos.x - bx, dy = pos.y - by;
+                if (dx * dx + dy * dy < eraseR2) {
+                    this.worker.postMessage({ type: 'removeRigidBody', id: this.rigidBodiesData[off] });
+                    break;
+                }
+            }
+        }
         this.worker.postMessage({ type: 'eraseWallNear', x: pos.x, y: pos.y });
     }
 
@@ -470,6 +558,77 @@ export class ToolManager {
             ctx.restore();
         }
 
+        // Rigid body drag preview
+        if (this.activeTool === 'rigidBody' && this.isDrawingRigidBody && this.mouseDown) {
+            const x1 = this.rigidBodyStartX, y1 = this.rigidBodyStartY;
+            const x2 = this.mouseX, y2 = this.mouseY;
+            const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+            const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2;
+            const halfW = Math.max(w / 2, 5), halfH = Math.max(h / 2, 5);
+            ctx.strokeStyle = 'rgba(6, 182, 212, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 4]);
+            if (this.activeShape === 'box') {
+                ctx.strokeRect(cx - halfW, cy - halfH, halfW * 2, halfH * 2);
+            } else if (this.activeShape === 'triangle') {
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - halfH);
+                ctx.lineTo(cx - halfW, cy + halfH);
+                ctx.lineTo(cx + halfW, cy + halfH);
+                ctx.closePath();
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+        }
+
+        // Draw rigid bodies from frame data
+        if (this.rigidBodiesData && this.rigidBodyCount > 0) {
+            const F = 16;
+            for (let b = 0; b < this.rigidBodyCount; b++) {
+                const off = b * F;
+                const type = this.rigidBodiesData[off + 1];
+                const x = this.rigidBodiesData[off + 2];
+                const y = this.rigidBodiesData[off + 3];
+                const angle = this.rigidBodiesData[off + 4];
+                const dim1 = this.rigidBodiesData[off + 5];
+                const dim2 = this.rigidBodiesData[off + 6];
+                const r = (this.rigidBodiesData[off + 13] || 0.58) * 255;
+                const g = (this.rigidBodiesData[off + 14] || 0.64) * 255;
+                const bl = (this.rigidBodiesData[off + 15] || 0.72) * 255;
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(angle);
+                ctx.fillStyle = `rgba(${r},${g},${bl},0.5)`;
+                ctx.strokeStyle = `rgba(${r},${g},${bl},0.9)`;
+                ctx.lineWidth = 2;
+                if (type === 0) {
+                    ctx.fillRect(-dim1, -dim2, dim1 * 2, dim2 * 2);
+                    ctx.strokeRect(-dim1, -dim2, dim1 * 2, dim2 * 2);
+                } else if (type === 1) {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, dim1, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(dim1, 0);
+                    ctx.lineTo(-dim1, 0);
+                    ctx.stroke();
+                } else if (type === 2) {
+                    const v0x = this.rigidBodiesData[off + 7], v0y = this.rigidBodiesData[off + 8];
+                    const v1x = this.rigidBodiesData[off + 9], v1y = this.rigidBodiesData[off + 10];
+                    const v2x = this.rigidBodiesData[off + 11], v2y = this.rigidBodiesData[off + 12];
+                    ctx.beginPath();
+                    ctx.moveTo(v0x, v0y);
+                    ctx.lineTo(v1x, v1y);
+                    ctx.lineTo(v2x, v2y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+        }
+
         // Draw tool cursor when mouse is over canvas
         if (this.mouseOver) {
             this._drawToolCursor(ctx);
@@ -568,6 +727,17 @@ export class ToolManager {
                 ctx.moveTo(x - 10, y); ctx.lineTo(x + 10, y);
                 ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10);
                 ctx.stroke();
+                break;
+            }
+
+            case 'rigidBody': {
+                ctx.strokeStyle = 'rgba(6, 182, 212, 0.7)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x - 12, y); ctx.lineTo(x + 12, y);
+                ctx.moveTo(x, y - 12); ctx.lineTo(x, y + 12);
+                ctx.stroke();
+                ctx.strokeRect(x - 8, y - 6, 16, 12);
                 break;
             }
 
@@ -774,7 +944,9 @@ export class ToolManager {
         this.drains = [];
         this.walls = [];
         this.portalPairs = [];
+        this.rigidBodies = [];
         this.pendingPortal = null;
         this.worker.postMessage({ type: 'clearPortals' });
+        this.worker.postMessage({ type: 'clearRigidBodies' });
     }
 }
