@@ -40,6 +40,7 @@ export class ToolManager {
         this.nextRigidBodyId = 1;
         this.rigidBodiesData = null;
         this.rigidBodyCount = 0;
+        this.boatData = null;
 
         // Active tool info element
         this.toolInfoEl = document.getElementById('active-tool-info');
@@ -69,6 +70,7 @@ export class ToolManager {
             drain: 'Drain',
             wall: 'Mur',
             rigidBody: 'Objet',
+            boat: 'Bateau',
             eraser: 'Gomme',
             vortex: 'Vortex',
             wind: 'Vent',
@@ -237,6 +239,10 @@ export class ToolManager {
                 this.isDrawingWall = true;
                 this.wallStartX = pos.x;
                 this.wallStartY = pos.y;
+                break;
+
+            case 'boat':
+                this.worker.postMessage({ type: 'placeBoat', x: pos.x, y: pos.y });
                 break;
 
             case 'rigidBody':
@@ -417,6 +423,13 @@ export class ToolManager {
                     this.worker.postMessage({ type: 'removeRigidBody', id: this.rigidBodiesData[off] });
                     break;
                 }
+            }
+        }
+        // Erase boat near cursor
+        if (this.boatData) {
+            const dx = pos.x - this.boatData.x, dy = pos.y - this.boatData.y;
+            if (dx * dx + dy * dy < eraseR2) {
+                this.worker.postMessage({ type: 'removeBoat' });
             }
         }
         this.worker.postMessage({ type: 'eraseWallNear', x: pos.x, y: pos.y });
@@ -629,6 +642,27 @@ export class ToolManager {
             }
         }
 
+        // Bateau (vue dessus)
+        if (this.boatData) {
+            const x = this.boatData.x, y = this.boatData.y, a = this.boatData.angle;
+            const hw = 22, hh = 14;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(a);
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.7)';
+            ctx.strokeStyle = 'rgba(147, 197, 253, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(hw, 0);
+            ctx.lineTo(-hw * 0.7, hh);
+            ctx.lineTo(-hw * 0.5, 0);
+            ctx.lineTo(-hw * 0.7, -hh);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+
         // Draw tool cursor when mouse is over canvas
         if (this.mouseOver) {
             this._drawToolCursor(ctx);
@@ -738,6 +772,19 @@ export class ToolManager {
                 ctx.moveTo(x, y - 12); ctx.lineTo(x, y + 12);
                 ctx.stroke();
                 ctx.strokeRect(x - 8, y - 6, 16, 12);
+                break;
+            }
+
+            case 'boat': {
+                ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x + 14, y);
+                ctx.lineTo(x - 10, y + 8);
+                ctx.lineTo(x - 6, y);
+                ctx.lineTo(x - 10, y - 8);
+                ctx.closePath();
+                ctx.stroke();
                 break;
             }
 
@@ -946,7 +993,9 @@ export class ToolManager {
         this.portalPairs = [];
         this.rigidBodies = [];
         this.pendingPortal = null;
+        this.boatData = null;
         this.worker.postMessage({ type: 'clearPortals' });
         this.worker.postMessage({ type: 'clearRigidBodies' });
+        this.worker.postMessage({ type: 'removeBoat' });
     }
 }

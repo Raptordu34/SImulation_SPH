@@ -92,7 +92,8 @@ worker.onmessage = function(e) {
             multiWorker: msg.multiWorker || false,
             workerCount: msg.workerCount || 0,
             rigidBodies: msg.rigidBodies || null,
-            rigidBodyCount: msg.rigidBodyCount ?? 0
+            rigidBodyCount: msg.rigidBodyCount ?? 0,
+            boat: msg.boat || null
         };
     } else if (msg.type === 'wallsUpdated') {
         toolManager.walls = msg.walls;
@@ -144,16 +145,45 @@ function renderLoop(timestamp) {
     // Render WebGL
     renderer.render(dt);
 
-    // Pass rigid body data to tool manager for overlay
+    // Pass rigid body and boat data to tool manager for overlay
     if (latestFrameData) {
         toolManager.rigidBodiesData = latestFrameData.rigidBodies;
         toolManager.rigidBodyCount = latestFrameData.rigidBodyCount ?? 0;
+        toolManager.boatData = latestFrameData.boat ?? null;
     }
     // Render overlay (tools, cursors, objects)
     toolManager.renderOverlay();
 }
 
 requestAnimationFrame(renderLoop);
+
+// ==========================================
+// BATEAU — CONTRÔLE ZQSD
+// ==========================================
+const boatKeysState = { up: false, left: false, down: false, right: false };
+function sendBoatKeys() {
+    worker.postMessage({ type: 'boatKeys', ...boatKeysState });
+}
+window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const k = e.key.toLowerCase();
+    let changed = false;
+    if (k === 'z') { changed = !boatKeysState.up; boatKeysState.up = true; }
+    if (k === 'q') { changed = !boatKeysState.left; boatKeysState.left = true; }
+    if (k === 's') { changed = !boatKeysState.down; boatKeysState.down = true; }
+    if (k === 'd') { changed = !boatKeysState.right; boatKeysState.right = true; }
+    if (changed && (k === 'z' || k === 'q' || k === 's' || k === 'd')) sendBoatKeys();
+});
+window.addEventListener('keyup', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const k = e.key.toLowerCase();
+    let changed = false;
+    if (k === 'z') { changed = boatKeysState.up; boatKeysState.up = false; }
+    if (k === 'q') { changed = boatKeysState.left; boatKeysState.left = false; }
+    if (k === 's') { changed = boatKeysState.down; boatKeysState.down = false; }
+    if (k === 'd') { changed = boatKeysState.right; boatKeysState.right = false; }
+    if (changed) sendBoatKeys();
+});
 
 // ==========================================
 // RESIZE HANDLER

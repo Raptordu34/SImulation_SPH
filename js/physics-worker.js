@@ -130,6 +130,22 @@ const RIGID_BODY_STIFFNESS = 5000;
 const MAX_RB_FLOATS = 16;
 const transferRigidBodies = new Float32Array(MAX_RIGID_BODIES * MAX_RB_FLOATS);
 
+// Bateau joueur (vue dessus, 0G quand placé)
+let boat = null;
+let boatKeys = { up: false, left: false, down: false, right: false };
+let gravityStored = null;
+const BOAT_THRUST = 1150;
+const BOAT_DRAG = 0.985;
+const BOAT_HALF_W = 22;
+const BOAT_HALF_H = 14;
+const BOAT_COLLISION_STIFFNESS = 5000;
+const BOAT_WATER_RESISTANCE = 0.06;
+const BOAT_MOTOR_FACTOR = 14;
+const BOAT_MOTOR_BACK_OFFSET = 10;
+const BOAT_MOTOR_DEPTH = 75;
+const BOAT_MOTOR_WIDTH = 52;
+const BOAT_ANGLE_SMOOTH = 0.2;
+
 // Local gravity active state
 let localGravityActive = false;
 
@@ -766,6 +782,109 @@ function integrateRigidBodies() {
 }
 
 // ==========================================
+// BATEAU — COUPLAGE FLUIDE (collision + moteur)
+// ==========================================
+function applyBoatForces() {
+    if (!boat) return;
+    boat.fx = 0;
+    boat.fy = 0;
+    const anyKey = boatKeys.up || boatKeys.down || boatKeys.left || boatKeys.right;
+    const pseudoBody = { x: boat.x, y: boat.y, angle: boat.angle, halfW: BOAT_HALF_W, halfH: BOAT_HALF_H };
+    const cosA = Math.cos(boat.angle), sinA = Math.sin(boat.angle);
+    const boatR = Math.sqrt(BOAT_HALF_W * BOAT_HALF_W + BOAT_HALF_H * BOAT_HALF_H) + PARTICLE_RADIUS + 5;
+    const motorStrength = toolStrength * BOAT_MOTOR_FACTOR;
+    const stern = -BOAT_HALF_W - BOAT_MOTOR_BACK_OFFSET;
+
+    for (let i = 0; i < particleCount; i++) {
+        if (p_frozen[i]) continue;
+        const px = p_x[i], py = p_y[i];
+        const ddx = px - boat.x, ddy = py - boat.y;
+        if (ddx * ddx + ddy * ddy > boatR * boatR) continue;
+
+        const col = collideParticleBox(px, py, pseudoBody);
+        if (col) {
+            const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
+            p_fx[i] += col.nx * forceMag;
+            p_fy[i] += col.ny * forceMag;
+            if (anyKey) {
+                boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
+                boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+            }
+        }
+
+        // Zone moteur : décalée à l'arrière, pousse l'eau (comme l'outil vent), puissance = force des outils
+        const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
+        const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
+        const behind = lx < stern && lx > stern - BOAT_MOTOR_DEPTH && Math.abs(ly) < BOAT_MOTOR_WIDTH;
+        if (behind) {
+            const pushX = -cosA * motorStrength;
+            const pushY = -sinA * motorStrength;
+            p_fx[i] += pushX;
+            p_fy[i] += pushY;
+        }
+    }
+}
+
+// ==========================================
+// BATEAU JOUEUR (ZQSD, vue dessus, 0G)
+// ==========================================
+function integrateBoat() {
+    if (!boat) return;
+    const dt = DT / SUBSTEPS;
+
+    let ax = 0, ay = 0;
+    if (boatKeys.up) ay -= BOAT_THRUST;
+    if (boatKeys.down) ay += BOAT_THRUST;
+    if (boatKeys.left) ax -= BOAT_THRUST;
+    if (boatKeys.right) ax += BOAT_THRUST;
+
+    boat.vx += (ax + (boat.fx || 0)) * dt;
+    boat.vy += (ay + (boat.fy || 0)) * dt;
+    boat.vx *= BOAT_DRAG;
+    boat.vy *= BOAT_DRAG;
+
+    const maxSpeed = 850;
+    const v2 = boat.vx * boat.vx + boat.vy * boat.vy;
+    if (v2 > maxSpeed * maxSpeed) {
+        const r = maxSpeed / Math.sqrt(v2);
+        boat.vx *= r;
+        boat.vy *= r;
+    }
+
+    boat.x += boat.vx * dt;
+    boat.y += boat.vy * dt;
+
+    // Orientation : au repos on garde la direction (pas de rotation par les particules)
+    let targetAngle = boat.angle;
+    if (ax !== 0 || ay !== 0) {
+        targetAngle = Math.atan2(ay, ax);
+    }
+    let da = targetAngle - boat.angle;
+    while (da > Math.PI) da -= 2 * Math.PI;
+    while (da < -Math.PI) da += 2 * Math.PI;
+    boat.angle += da * BOAT_ANGLE_SMOOTH;
+
+    // Rebond sur les bords du conteneur
+    const margin = 2;
+    if (boat.x - BOAT_HALF_W < margin) {
+        boat.x = margin + BOAT_HALF_W;
+        boat.vx *= -0.4;
+    }
+    if (boat.x + BOAT_HALF_W > width - margin) {
+        boat.x = width - margin - BOAT_HALF_W;
+        boat.vx *= -0.4;
+    }
+    if (boat.y - BOAT_HALF_H < margin) {
+        boat.y = margin + BOAT_HALF_H;
+        boat.vy *= -0.4;
+    }
+    if (boat.y + BOAT_HALF_H > height - margin) {
+        boat.y = height - margin - BOAT_HALF_H;
+        boat.vy *= -0.4;
+    }
+}
+
+// ==========================================
 // INTEGRATION
 // ==========================================
 function integrate() {
@@ -1098,8 +1217,10 @@ function step() {
     }
 
     applyRigidBodyForces();
+    applyBoatForces();
     integrate();
     integrateRigidBodies();
+    integrateBoat();
     updateFoam();
     processEmitters(DT);
 }
@@ -1177,7 +1298,8 @@ function simLoop() {
         multiWorker: useMultiWorker,
         workerCount: numSubWorkers,
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
-        rigidBodyCount: rbCount
+        rigidBodyCount: rbCount,
+        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null
     });
 
     setTimeout(simLoop, 4);
@@ -1300,6 +1422,14 @@ self.onmessage = function(e) {
             explosions = [];
             portals = [];
             rigidBodies = [];
+            if (boat) {
+                boat = null;
+                if (gravityStored != null) {
+                    GRAVITY_Y = gravityStored.y;
+                    GRAVITY_X = gravityStored.x;
+                    gravityStored = null;
+                }
+            }
             p_frozen.fill(0);
             p_teleportCD.fill(0);
             addParticles(1800, width / 2 - 200, height / 4);
@@ -1430,6 +1560,39 @@ self.onmessage = function(e) {
 
         case 'clearRigidBodies':
             rigidBodies = [];
+            break;
+
+        case 'placeBoat':
+            if (!boat) {
+                gravityStored = { x: GRAVITY_X, y: GRAVITY_Y };
+                GRAVITY_X = 0;
+                GRAVITY_Y = 0;
+            }
+            boat = {
+                x: msg.x ?? width / 2,
+                y: msg.y ?? height / 2,
+                vx: 0,
+                vy: 0,
+                angle: 0,
+                fx: 0,
+                fy: 0
+            };
+            break;
+
+        case 'removeBoat':
+            boat = null;
+            if (gravityStored != null) {
+                GRAVITY_Y = gravityStored.y;
+                GRAVITY_X = gravityStored.x;
+                gravityStored = null;
+            }
+            break;
+
+        case 'boatKeys':
+            boatKeys.up = !!msg.up;
+            boatKeys.left = !!msg.left;
+            boatKeys.down = !!msg.down;
+            boatKeys.right = !!msg.right;
             break;
 
         case 'getState':

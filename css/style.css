@@ -83,6 +83,7 @@
 #canvas-container[data-tool="drain"] { cursor: cell; }
 #canvas-container[data-tool="wall"] { cursor: crosshair; }
 #canvas-container[data-tool="rigidBody"] { cursor: crosshair; }
+#canvas-container[data-tool="boat"] { cursor: crosshair; }
 #canvas-container[data-tool="eraser"] { cursor: pointer; }
 #canvas-container[data-tool="vortex"] { cursor: grab; }
 #canvas-container[data-tool="wind"] { cursor: e-resize; }
