@@ -18,7 +18,7 @@ const MOUSE_RADIUS = 45;
 let GAS_CONST = 3000;
 let NEAR_GAS_CONST = 5000;
 let SURFACE_TENSION = 1000;
-let VISC = 80;
+let VISC = 5;
 let GRAVITY_Y = 1200;
 let GRAVITY_X = 0;
 
@@ -132,19 +132,19 @@ const transferRigidBodies = new Float32Array(MAX_RIGID_BODIES * MAX_RB_FLOATS);
 
 // Bateau joueur (vue dessus, 0G quand placé)
 let boat = null;
-let boatKeys = { up: false, left: false, down: false, right: false };
+let boatKeys = { up: false, left: false, down: false, right: false, throttle: 0 };
 let gravityStored = null;
 const BOAT_THRUST = 1150;
 const BOAT_DRAG = 0.985;
 const BOAT_HALF_W = 22;
 const BOAT_HALF_H = 14;
 const BOAT_COLLISION_STIFFNESS = 5000;
-const BOAT_WATER_RESISTANCE = 0.06;
-const BOAT_MOTOR_FACTOR = 14;
+const BOAT_WATER_RESISTANCE = 0.15;
 const BOAT_MOTOR_BACK_OFFSET = 10;
 const BOAT_MOTOR_DEPTH = 75;
 const BOAT_MOTOR_WIDTH = 52;
-const BOAT_ANGLE_SMOOTH = 0.2;
+const BOAT_WATER_CURRENT_FACTOR = 0.08;
+const BOAT_WAVE_TORQUE_FACTOR = 0.0004;
 
 // Local gravity active state
 let localGravityActive = false;
@@ -788,83 +788,106 @@ function applyBoatForces() {
     if (!boat) return;
     boat.fx = 0;
     boat.fy = 0;
-    
-    const anyKey = boatKeys.up || boatKeys.down || boatKeys.left || boatKeys.right;
+    boat.torqueFromWater = 0;
+
     const pseudoBody = { x: boat.x, y: boat.y, angle: boat.angle, halfW: BOAT_HALF_W, halfH: BOAT_HALF_H };
     const cosA = Math.cos(boat.angle), sinA = Math.sin(boat.angle);
     const boatR = Math.sqrt(BOAT_HALF_W * BOAT_HALF_W + BOAT_HALF_H * BOAT_HALF_H) + PARTICLE_RADIUS + 5;
-    
+
     // --- 1. Calcul de la vitesse du bateau ---
     const boatSpeed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
-    const speedFactor = Math.min(boatSpeed / 850, 1.0); // 850 est la vitesse max définie dans integrateBoat
-    
+    const speedFactor = Math.min(boatSpeed / 850, 1.0);
+
     // --- 2. Configuration de la force du "Vent" (Moteur/Sillage) ---
-    // Force de base très élevée, amplifiée jusqu'à x3.5 à pleine vitesse
-    const baseMotorForce = 15000; 
+    const baseMotorForce = 15000;
     const dynamicMotorForce = baseMotorForce + (baseMotorForce * 2.5 * speedFactor);
     const stern = -BOAT_HALF_W - BOAT_MOTOR_BACK_OFFSET;
+
+    // Accumulateurs pour courant environnant (vagues/courants)
+    let waterVxSum = 0, waterVySum = 0;
+    let waterNeighborCount = 0;
+    const currentDetectRadius = boatR + 60;
+    const currentDetectR2 = currentDetectRadius * currentDetectRadius;
 
     for (let i = 0; i < particleCount; i++) {
         if (p_frozen[i]) continue;
         const px = p_x[i], py = p_y[i];
         const ddx = px - boat.x, ddy = py - boat.y;
-        
-        // Optimisation : on ignore les particules très lointaines
-        // On élargit un peu la zone de détection pour inclure le sillage étendu
-        if (ddx * ddx + ddy * ddy > (boatR + 150) * (boatR + 150)) continue;
+        const dist2 = ddx * ddx + ddy * ddy;
 
-        // --- 3. Collisions physiques avec la coque ---
-        if (ddx * ddx + ddy * ddy <= boatR * boatR) {
+        // Optimisation : on ignore les particules très lointaines
+        if (dist2 > (boatR + 150) * (boatR + 150)) continue;
+
+        // --- 3. Détection du courant environnant (vagues, courants) ---
+        if (dist2 < currentDetectR2) {
+            const w = 1.0 - Math.sqrt(dist2) / currentDetectRadius;
+            waterVxSum += p_vx[i] * w;
+            waterVySum += p_vy[i] * w;
+            waterNeighborCount++;
+
+            // Couple de rotation : les particules latérales font tourner le bateau
+            const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
+            const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
+            // Vitesse latérale relative de la particule dans le repère local
+            const pLocalVy = -p_vx[i] * sinA + p_vy[i] * cosA;
+            boat.torqueFromWater += ly * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
+        }
+
+        // --- 4. Collisions physiques avec la coque ---
+        if (dist2 <= boatR * boatR) {
             const col = collideParticleBox(px, py, pseudoBody);
             if (col) {
                 const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
                 p_fx[i] += col.nx * forceMag;
                 p_fy[i] += col.ny * forceMag;
-                if (anyKey) {
-                    boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
-                    boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
-                }
+                // Feedback toujours actif (pas seulement quand on appuie sur les touches)
+                boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
+                boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
             }
         }
 
-        // --- 4. Effet "Vent" : Propulsion du moteur et remous ---
-        // Coordonnées locales pour vérifier si l'eau est derrière le bateau
+        // --- 5. Effet "Vent" : Propulsion du moteur et remous ---
         const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
         const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
-        
-        // La zone d'impact s'allonge et s'élargit avec la vitesse
+
         const wakeLength = BOAT_MOTOR_DEPTH + (120 * speedFactor);
         const wakeWidth = BOAT_MOTOR_WIDTH + (30 * speedFactor);
         const behind = lx < stern && lx > stern - wakeLength && Math.abs(ly) < wakeWidth;
-        
-        // S'active si on utilise les touches OU si le bateau a de l'inertie (> 50 de vitesse)
-        if (behind && (boatKeys.up || boatKeys.down || boatSpeed > 50)) {
-            // Poussée inversée si on recule
-            const dir = boatKeys.down ? -1 : 1; 
-            
-            // On repousse violemment les particules opposées à l'angle du bateau (effet vent SPH)
-            p_fx[i] -= cosA * dynamicMotorForce * dir;
-            p_fy[i] -= sinA * dynamicMotorForce * dir;
 
-            // --- 5. Feedback Visuel : Mousse spectaculaire ---
-            // Le taux d'apparition de la mousse augmente avec la vitesse
-            const foamThreshold = 0.96 - (0.45 * speedFactor); 
+        if (behind && (boatKeys.throttle > 0 || boatKeys.down || boatSpeed > 50)) {
+            const dir = boatKeys.down ? -1 : 1;
+            // Force proportionnelle au throttle quand on avance, sinon inertie
+            const throttleScale = boatKeys.throttle > 0 ? boatKeys.throttle : (boatSpeed > 50 ? speedFactor * 0.5 : 0);
+
+            p_fx[i] -= cosA * dynamicMotorForce * dir * throttleScale;
+            p_fy[i] -= sinA * dynamicMotorForce * dir * throttleScale;
+
+            // --- 6. Feedback Visuel : Mousse ---
+            const effectiveSpeedFactor = Math.max(speedFactor, boatKeys.throttle);
+            const foamThreshold = 0.96 - (0.45 * effectiveSpeedFactor);
             if (xorshift() > foamThreshold && foamCount < MAX_FOAM) {
                 foam_x[foamCount] = px;
                 foam_y[foamCount] = py;
-                
-                // Vitesse d'éjection des bulles de mousse
-                const ejectSpeed = 250 + 450 * speedFactor;
+
+                const ejectSpeed = 250 + 450 * effectiveSpeedFactor;
                 foam_vx[foamCount] = p_vx[i] * 0.2 - cosA * ejectSpeed * dir + (xorshift() - 0.5) * 150;
                 foam_vy[foamCount] = p_vy[i] * 0.2 - sinA * ejectSpeed * dir + (xorshift() - 0.5) * 150;
-                
-                // Durée de vie et taille grandissent à haute vitesse
-                foam_life[foamCount] = 0.5 + xorshift() * (0.3 + speedFactor * 0.6); 
-                foam_size[foamCount] = 0.8 + xorshift() * (0.8 + speedFactor * 1.5); 
-                
+
+                foam_life[foamCount] = 0.5 + xorshift() * (0.3 + effectiveSpeedFactor * 0.6);
+                foam_size[foamCount] = 0.8 + xorshift() * (0.8 + effectiveSpeedFactor * 1.5);
+
                 foamCount++;
             }
         }
+    }
+
+    // --- 7. Appliquer la force des courants/vagues sur le bateau ---
+    if (waterNeighborCount > 0) {
+        const avgWaterVx = waterVxSum / waterNeighborCount;
+        const avgWaterVy = waterVySum / waterNeighborCount;
+        // Force proportionnelle à la différence de vitesse entre l'eau et le bateau
+        boat.fx += (avgWaterVx - boat.vx) * BOAT_WATER_CURRENT_FACTOR * waterNeighborCount;
+        boat.fy += (avgWaterVy - boat.vy) * BOAT_WATER_CURRENT_FACTOR * waterNeighborCount;
     }
 }
 
@@ -875,22 +898,25 @@ function integrateBoat() {
     if (!boat) return;
     const dt = DT / SUBSTEPS;
 
-    // Logique de gouvernail et de moteur
+    // Logique de gouvernail et de moteur avec puissance variable
     let thrust = 0;
     let turnSpeed = 0;
+    const throttle = boatKeys.throttle || 0; // 0..1 puissance variable
 
-    if (boatKeys.up) thrust += BOAT_THRUST;
-    if (boatKeys.down) thrust -= BOAT_THRUST * 0.4; // Marche arrière plus lente
-    if (boatKeys.left) turnSpeed -= 3.5;            // Vitesse de rotation
+    if (throttle > 0) thrust += BOAT_THRUST * throttle;
+    if (boatKeys.down) thrust -= BOAT_THRUST * 0.4 * Math.max(throttle, 0.5);
+    if (boatKeys.left) turnSpeed -= 3.5;
     if (boatKeys.right) turnSpeed += 3.5;
 
     // Le bateau ne peut tourner efficacement que s'il a de la vitesse
     const speed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
-    const speedFactor = Math.min(speed / 200, 1.0); 
-    
-    // Si on force la rotation sur place à basse vitesse
+    const speedFactor = Math.min(speed / 200, 1.0);
+
+    // Rotation : gouvernail + couple des vagues
     const actualTurn = turnSpeed * (0.3 + 0.7 * speedFactor);
     boat.angle += actualTurn * dt;
+    // Les vagues/courants appliquent un couple sur le bateau
+    boat.angle += (boat.torqueFromWater || 0) * dt;
 
     // Vecteur de direction
     const cosA = Math.cos(boat.angle);
@@ -903,15 +929,13 @@ function integrateBoat() {
     boat.vx += (ax + (boat.fx || 0)) * dt;
     boat.vy += (ay + (boat.fy || 0)) * dt;
 
-    // Friction latérale (pour éviter que le bateau "glisse" de côté comme une voiture sur la glace)
+    // Friction latérale (pour éviter que le bateau "glisse" de côté)
     const forwardVel = boat.vx * cosA + boat.vy * sinA;
     const lateralVel = boat.vx * -sinA + boat.vy * cosA;
-    
-    // Appliquer une forte résistance au dérapage
-    const dampedLateral = lateralVel * 0.92; 
+
+    const dampedLateral = lateralVel * 0.92;
     const dampedForward = forwardVel * BOAT_DRAG;
 
-    // Reconstruire le vecteur vitesse
     boat.vx = dampedForward * cosA - dampedLateral * sinA;
     boat.vy = dampedForward * sinA + dampedLateral * cosA;
 
@@ -1667,6 +1691,7 @@ self.onmessage = function(e) {
             boatKeys.left = !!msg.left;
             boatKeys.down = !!msg.down;
             boatKeys.right = !!msg.right;
+            boatKeys.throttle = msg.throttle !== undefined ? msg.throttle : (msg.up ? 1 : 0);
             break;
 
         case 'getState':

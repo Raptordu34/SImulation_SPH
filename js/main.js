@@ -142,6 +142,9 @@ function renderLoop(timestamp) {
         );
     }
 
+    // Poll manette chaque frame
+    pollGamepad();
+
     // Render WebGL
     renderer.render(dt);
 
@@ -158,9 +161,11 @@ function renderLoop(timestamp) {
 requestAnimationFrame(renderLoop);
 
 // ==========================================
-// BATEAU — CONTRÔLE ZQSD
+// BATEAU — CONTRÔLE ZQSD + MANETTE
 // ==========================================
-const boatKeysState = { up: false, left: false, down: false, right: false };
+const boatKeysState = { up: false, left: false, down: false, right: false, throttle: 0 };
+let keyboardThrottle = 0; // Throttle progressif au clavier (0..1)
+
 function sendBoatKeys() {
     worker.postMessage({ type: 'boatKeys', ...boatKeysState });
 }
@@ -184,6 +189,91 @@ window.addEventListener('keyup', (e) => {
     if (k === 'd') { changed = boatKeysState.right; boatKeysState.right = false; }
     if (changed) sendBoatKeys();
 });
+
+// ==========================================
+// MANETTE (Gamepad API)
+// ==========================================
+// Mapping standard :
+//   Stick gauche X (axes[0]) → direction gauche/droite
+//   Gâchette droite (buttons[7]) → accélération (throttle variable)
+//   Gâchette gauche (buttons[6]) → marche arrière
+//   Stick gauche Y (axes[1]) → alternative accélération/freinage
+let gamepadConnected = false;
+let gamepadIndex = -1;
+
+window.addEventListener('gamepadconnected', (e) => {
+    gamepadConnected = true;
+    gamepadIndex = e.gamepad.index;
+    console.log(`Manette connectée : ${e.gamepad.id}`);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+    if (e.gamepad.index === gamepadIndex) {
+        gamepadConnected = false;
+        gamepadIndex = -1;
+        console.log('Manette déconnectée');
+    }
+});
+
+const GAMEPAD_DEADZONE = 0.12;
+
+function pollGamepad() {
+    if (!gamepadConnected) return;
+    const gamepads = navigator.getGamepads();
+    const gp = gamepads[gamepadIndex];
+    if (!gp) return;
+
+    // Stick gauche X → direction
+    const stickX = Math.abs(gp.axes[0]) > GAMEPAD_DEADZONE ? gp.axes[0] : 0;
+    // Stick gauche Y → alternative throttle (négatif = avant)
+    const stickY = Math.abs(gp.axes[1]) > GAMEPAD_DEADZONE ? gp.axes[1] : 0;
+
+    // Gâchettes : RT (bouton 7) = accélérer, LT (bouton 6) = reculer
+    const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
+    const lt = gp.buttons[6] ? gp.buttons[6].value : 0;
+
+    // Calcul du throttle : priorité aux gâchettes, sinon stick Y
+    let gpThrottle = 0;
+    let gpReverse = false;
+    if (rt > 0.05) {
+        gpThrottle = rt;
+    } else if (stickY < -0.05) {
+        gpThrottle = -stickY; // stick vers le haut = avancer
+    }
+    if (lt > 0.2) {
+        gpReverse = true;
+        gpThrottle = Math.max(gpThrottle, lt * 0.6);
+    } else if (stickY > 0.2) {
+        gpReverse = true;
+        gpThrottle = Math.max(gpThrottle, stickY * 0.6);
+    }
+
+    // Direction gauche/droite
+    const gpLeft = stickX < -GAMEPAD_DEADZONE;
+    const gpRight = stickX > GAMEPAD_DEADZONE;
+
+    // Combiner clavier + manette
+    const combinedUp = boatKeysState.up || gpThrottle > 0.05;
+    const combinedDown = boatKeysState.down || gpReverse;
+    const combinedLeft = boatKeysState.left || gpLeft;
+    const combinedRight = boatKeysState.right || gpRight;
+
+    // Throttle clavier : montée/descente progressive
+    if (boatKeysState.up) {
+        keyboardThrottle = Math.min(keyboardThrottle + 0.04, 1.0);
+    } else {
+        keyboardThrottle = Math.max(keyboardThrottle - 0.06, 0);
+    }
+    const combinedThrottle = Math.min(Math.max(gpThrottle, keyboardThrottle), 1.0);
+
+    worker.postMessage({
+        type: 'boatKeys',
+        up: combinedUp,
+        down: combinedDown,
+        left: combinedLeft,
+        right: combinedRight,
+        throttle: combinedThrottle
+    });
+}
 
 // ==========================================
 // RESIZE HANDLER

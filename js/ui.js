@@ -11,7 +11,7 @@ export const PRESETS = {
             gravity: 1200,
             gasConst: 3000,
             nearGasConst: 5000,
-            viscosity: 80,
+            viscosity: 5,
             surfaceTension: 1000
         },
         render: {
@@ -152,7 +152,7 @@ export class UI {
             gravity: 0,            // 0G par défaut
             gasConst: 4000,        // Forte pression pour éviter que les particules s'agglomèrent
             nearGasConst: 6000,
-            viscosity: 60,         // Viscosité moyenne pour de belles vagues
+            viscosity: 5,          // Viscosité basse pour un fluide réaliste
             surfaceTension: 1500,
             // Render
             mode: 'water',
