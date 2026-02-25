@@ -4,14 +4,15 @@
 import { Pane } from 'tweakpane';
 
 // Presets de fluides — paramètres physiques calibrés
+// Presets de fluides — paramètres physiques calibrés
 export const PRESETS = {
     water: {
-        name: 'Eau',
+        name: 'Océan (Top-Down)',
         physics: {
-            gravity: 1200,
+            gravity: 0,
             gasConst: 3000,
             nearGasConst: 5000,
-            viscosity: 80,
+            viscosity: 5,
             surfaceTension: 1000
         },
         render: {
@@ -149,10 +150,10 @@ export class UI {
         // Current params (mutable, bound to Tweakpane)
         this.params = {
             // Physics
-            gravity: 1200,
+            gravity: 0,
             gasConst: 3000,
             nearGasConst: 5000,
-            viscosity: 80,
+            viscosity: 5,
             surfaceTension: 1000,
             // Render
             mode: 'water',
@@ -185,7 +186,7 @@ export class UI {
         this._initPresets();
         this._initButtons();
     }
-
+    
     _rgbToArray(c) {
         return [c.r / 255, c.g / 255, c.b / 255];
     }

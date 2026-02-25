@@ -201,25 +201,21 @@ void main() {
     float mask = surface.a;
 
     if (mask < 0.01) {
-        // No fluid here - draw background with optional caustics + shadows
-        vec4 bg = texture(u_backgroundTex, v_uv);
+        // Fond procédural d'océan profond avec caustiques animées
+        float bgCaustic = 0.0;
+        if (u_causticsEnabled == 1) {
+            bgCaustic = caustics(v_uv, u_time * 0.3) * 0.4;
+        }
+        vec3 deepOcean = mix(u_deepColor, u_waterColor, 0.15);
+        vec3 bgRgb = deepOcean + vec3(0.2, 0.4, 0.6) * bgCaustic;
 
         // Apply shadows on background
         if (u_shadowEnabled == 1) {
             float shadow = texture(u_shadowTex, v_uv).r;
-            bg.rgb *= mix(1.0, 0.4, shadow);
+            bgRgb *= mix(1.0, 0.4, shadow);
         }
 
-        if (u_causticsEnabled == 1) {
-            // Light caustics on the background where fluid is nearby
-            float nearbyFluid = texture(u_thicknessTex, v_uv).r;
-            if (nearbyFluid > 0.05) {
-                float c = caustics(v_uv, u_time) * nearbyFluid * 0.3;
-                bg.rgb += vec3(0.3, 0.5, 0.7) * c;
-            }
-        }
-
-        fragColor = bg;
+        fragColor = vec4(bgRgb, 1.0);
         return;
     }
 
@@ -231,7 +227,11 @@ void main() {
     // === REFRACTION ===
     vec2 refractedUV = v_uv + normal * u_refractionStrength * thickness * 0.02;
     refractedUV = clamp(refractedUV, 0.0, 1.0);
-    vec3 background = texture(u_backgroundTex, refractedUV).rgb;
+    
+    // Calculer la couleur de réfraction sans utiliser la grille statique
+    float refCaustic = 0.0;
+    if (u_causticsEnabled == 1) refCaustic = caustics(refractedUV, u_time * 0.3) * 0.4;
+    vec3 background = mix(u_deepColor, u_waterColor, 0.15) + vec3(0.2, 0.4, 0.6) * refCaustic;
 
     // Apply shadows on refracted background
     if (u_shadowEnabled == 1) {

@@ -784,43 +784,93 @@ function integrateRigidBodies() {
 // ==========================================
 // BATEAU — COUPLAGE FLUIDE (collision + moteur)
 // ==========================================
+// ==========================================
+// BATEAU — COUPLAGE FLUIDE (collision + moteur)
+// ==========================================
+// ==========================================
+// BATEAU — COUPLAGE FLUIDE (collision + moteur/vent)
+// ==========================================
 function applyBoatForces() {
     if (!boat) return;
     boat.fx = 0;
     boat.fy = 0;
+    
     const anyKey = boatKeys.up || boatKeys.down || boatKeys.left || boatKeys.right;
     const pseudoBody = { x: boat.x, y: boat.y, angle: boat.angle, halfW: BOAT_HALF_W, halfH: BOAT_HALF_H };
     const cosA = Math.cos(boat.angle), sinA = Math.sin(boat.angle);
+    
+    // Rayon rapide pour éliminer les particules trop loin des collisions de la coque
     const boatR = Math.sqrt(BOAT_HALF_W * BOAT_HALF_W + BOAT_HALF_H * BOAT_HALF_H) + PARTICLE_RADIUS + 5;
-    const motorStrength = toolStrength * BOAT_MOTOR_FACTOR;
-    const stern = -BOAT_HALF_W - BOAT_MOTOR_BACK_OFFSET;
+    
+    // Paramètres de la zone de vent (moteur)
+    const stern = -BOAT_HALF_W - 5; // Début du souffle juste derrière le bateau
+    const motorDepth = 150;         // Longueur de la traînée de vent (plus grande pour un effet puissant)
+    const motorWidth = 45;          // Largeur du souffle
+
+    // Vitesse actuelle du bateau
+    const speed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
+    
+    // Puissance du "vent" (moteur) :
+    // Extrêmement fort si on actionne les moteurs, et augmente massivement avec la vitesse.
+    let enginePower = 0;
+    if (anyKey) {
+        enginePower = 12000 + speed * 45.0; // Souffle surpuissant quand le joueur accélère
+    } else if (speed > 20) {
+        enginePower = speed * 20.0; // Vent résiduel dû au déplacement inertiel
+    }
 
     for (let i = 0; i < particleCount; i++) {
         if (p_frozen[i]) continue;
         const px = p_x[i], py = p_y[i];
         const ddx = px - boat.x, ddy = py - boat.y;
-        if (ddx * ddx + ddy * ddy > boatR * boatR) continue;
-
-        const col = collideParticleBox(px, py, pseudoBody);
-        if (col) {
-            const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
-            p_fx[i] += col.nx * forceMag;
-            p_fy[i] += col.ny * forceMag;
-            if (anyKey) {
-                boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
-                boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+        
+        // 1. Collisions physiques de base avec la coque
+        if (ddx * ddx + ddy * ddy <= boatR * boatR) {
+            const col = collideParticleBox(px, py, pseudoBody);
+            if (col) {
+                const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
+                p_fx[i] += col.nx * forceMag;
+                p_fy[i] += col.ny * forceMag;
+                // Le bateau est ralenti par l'eau
+                if (anyKey) {
+                    boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
+                    boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+                }
             }
         }
 
-        // Zone moteur : décalée à l'arrière, pousse l'eau (comme l'outil vent), puissance = force des outils
-        const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
-        const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
-        const behind = lx < stern && lx > stern - BOAT_MOTOR_DEPTH && Math.abs(ly) < BOAT_MOTOR_WIDTH;
-        if (behind) {
-            const pushX = -cosA * motorStrength;
-            const pushY = -sinA * motorStrength;
-            p_fx[i] += pushX;
-            p_fy[i] += pushY;
+        // 2. Onde de sillage / Vent surpuissant du moteur
+        if (enginePower > 0) {
+            // Transformation des coordonnées de la particule dans l'espace local du bateau
+            const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
+            const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
+            
+            // Vérifier si la particule est dans le rectangle de souffle derrière le bateau
+            const behind = lx < stern && lx > stern - motorDepth && Math.abs(ly) < motorWidth;
+            
+            if (behind) {
+                // Atténuation de la force : le vent est plus fort près de l'hélice et diminue vers la fin
+                const distanceRatio = 1.0 - Math.abs(lx - stern) / motorDepth;
+                
+                // Calcul de la force de poussée directionnelle
+                const pushX = -cosA * enginePower * distanceRatio;
+                const pushY = -sinA * enginePower * distanceRatio;
+                
+                p_fx[i] += pushX;
+                p_fy[i] += pushY;
+
+                // Génération violente de mousse/écume soufflée par le vent
+                if (speed > 50 && foamCount < MAX_FOAM && xorshift() > 0.65) {
+                    foam_x[foamCount] = px;
+                    foam_y[foamCount] = py;
+                    // L'écume est éjectée très vite en arrière, avec un peu de dispersion
+                    foam_vx[foamCount] = p_vx[i] * 0.1 - cosA * speed * 1.8 + (xorshift() - 0.5) * 120;
+                    foam_vy[foamCount] = p_vy[i] * 0.1 - sinA * speed * 1.8 + (xorshift() - 0.5) * 120;
+                    foam_life[foamCount] = 0.5 + xorshift() * 1.0;
+                    foam_size[foamCount] = 1.0 + xorshift() * 2.0; // Grosses éclaboussures
+                    foamCount++;
+                }
+            }
         }
     }
 }
@@ -1367,7 +1417,37 @@ self.onmessage = function(e) {
             cols = Math.ceil(width / H);
             rows = Math.ceil(height / H);
             initArrays();
-            addParticles(1800, width / 2 - 200, height / 4);
+            
+            // 1. Désactiver la gravité par défaut
+            GRAVITY_X = 0;
+            GRAVITY_Y = 0;
+
+            // 2. Remplir l'écran de particules (bassin complet)
+            particleCount = 0;
+            const spacing = PARTICLE_RADIUS * 2.1;
+            for (let y = spacing * 2; y < height - spacing * 2; y += spacing) {
+                for (let x = spacing * 2; x < width - spacing * 2; x += spacing) {
+                    if (particleCount < MAX_PARTICLES) {
+                        p_x[particleCount] = x + (xorshift() - 0.5);
+                        p_y[particleCount] = y + (xorshift() - 0.5);
+                        p_vx[particleCount] = 0;
+                        p_vy[particleCount] = 0;
+                        p_fx[particleCount] = 0;
+                        p_fy[particleCount] = 0;
+                        p_frozen[particleCount] = 0;
+                        p_teleportCD[particleCount] = 0;
+                        particleCount++;
+                    }
+                }
+            }
+
+            // 3. Placer le bateau automatiquement au centre
+            boat = {
+                x: width / 2,
+                y: height / 2,
+                vx: 0, vy: 0, angle: -Math.PI/2, fx: 0, fy: 0
+            };
+
             if (useMultiWorker) {
                 // Wait for sub-workers to be ready before starting
                 pendingSimStart = true;
@@ -1432,7 +1512,25 @@ self.onmessage = function(e) {
             }
             p_frozen.fill(0);
             p_teleportCD.fill(0);
-            addParticles(1800, width / 2 - 200, height / 4);
+            
+            // Remplissage complet au lieu du addParticles basique
+            const resetSpacing = PARTICLE_RADIUS * 2.1;
+            for (let y = resetSpacing * 2; y < height - resetSpacing * 2; y += resetSpacing) {
+                for (let x = resetSpacing * 2; x < width - resetSpacing * 2; x += resetSpacing) {
+                    if (particleCount < MAX_PARTICLES) {
+                        p_x[particleCount] = x + (xorshift() - 0.5);
+                        p_y[particleCount] = y + (xorshift() - 0.5);
+                        p_vx[particleCount] = 0;
+                        p_vy[particleCount] = 0;
+                        p_fx[particleCount] = 0;
+                        p_fy[particleCount] = 0;
+                        p_frozen[particleCount] = 0;
+                        p_teleportCD[particleCount] = 0;
+                        particleCount++;
+                    }
+                }
+            }
+            boat = { x: width / 2, y: height / 2, vx: 0, vy: 0, angle: -Math.PI/2, fx: 0, fy: 0 };
             break;
 
         case 'addEmitter':
@@ -1492,7 +1590,6 @@ self.onmessage = function(e) {
             break;
         }
 
-        // New tools
         case 'explosion':
             createExplosion(msg.x, msg.y);
             break;
