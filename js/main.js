@@ -142,8 +142,8 @@ function renderLoop(timestamp) {
         );
     }
 
-    // Poll manette chaque frame
-    pollGamepad();
+    // Mise à jour des contrôles bateau (clavier + manette) chaque frame
+    updateBoatControls();
 
     // Render WebGL
     renderer.render(dt);
@@ -216,61 +216,60 @@ window.addEventListener('gamepaddisconnected', (e) => {
 
 const GAMEPAD_DEADZONE = 0.12;
 
-function pollGamepad() {
-    if (!gamepadConnected) return;
-    const gamepads = navigator.getGamepads();
-    const gp = gamepads[gamepadIndex];
-    if (!gp) return;
-
-    // Stick gauche X → direction
-    const stickX = Math.abs(gp.axes[0]) > GAMEPAD_DEADZONE ? gp.axes[0] : 0;
-    // Stick gauche Y → alternative throttle (négatif = avant)
-    const stickY = Math.abs(gp.axes[1]) > GAMEPAD_DEADZONE ? gp.axes[1] : 0;
-
-    // Gâchettes : RT (bouton 7) = accélérer, LT (bouton 6) = reculer
-    const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
-    const lt = gp.buttons[6] ? gp.buttons[6].value : 0;
-
-    // Calcul du throttle : priorité aux gâchettes, sinon stick Y
-    let gpThrottle = 0;
-    let gpReverse = false;
-    if (rt > 0.05) {
-        gpThrottle = rt;
-    } else if (stickY < -0.05) {
-        gpThrottle = -stickY; // stick vers le haut = avancer
-    }
-    if (lt > 0.2) {
-        gpReverse = true;
-        gpThrottle = Math.max(gpThrottle, lt * 0.6);
-    } else if (stickY > 0.2) {
-        gpReverse = true;
-        gpThrottle = Math.max(gpThrottle, stickY * 0.6);
-    }
-
-    // Direction gauche/droite
-    const gpLeft = stickX < -GAMEPAD_DEADZONE;
-    const gpRight = stickX > GAMEPAD_DEADZONE;
-
-    // Combiner clavier + manette
-    const combinedUp = boatKeysState.up || gpThrottle > 0.05;
-    const combinedDown = boatKeysState.down || gpReverse;
-    const combinedLeft = boatKeysState.left || gpLeft;
-    const combinedRight = boatKeysState.right || gpRight;
-
-    // Throttle clavier : montée/descente progressive
+function updateBoatControls() {
+    // 1. Throttle clavier : montée/descente progressive (toujours actif)
     if (boatKeysState.up) {
         keyboardThrottle = Math.min(keyboardThrottle + 0.04, 1.0);
     } else {
         keyboardThrottle = Math.max(keyboardThrottle - 0.06, 0);
     }
+
+    // 2. Lire la manette si connectée
+    let gpThrottle = 0;
+    let gpReverse = false;
+    let gpLeft = false;
+    let gpRight = false;
+
+    if (gamepadConnected) {
+        const gamepads = navigator.getGamepads();
+        const gp = gamepads[gamepadIndex];
+        if (gp) {
+            // Stick gauche X → direction
+            const stickX = Math.abs(gp.axes[0]) > GAMEPAD_DEADZONE ? gp.axes[0] : 0;
+            // Stick gauche Y → alternative throttle (négatif = avant)
+            const stickY = Math.abs(gp.axes[1]) > GAMEPAD_DEADZONE ? gp.axes[1] : 0;
+
+            // Gâchettes : RT (bouton 7) = accélérer, LT (bouton 6) = reculer
+            const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
+            const lt = gp.buttons[6] ? gp.buttons[6].value : 0;
+
+            if (rt > 0.05) {
+                gpThrottle = rt;
+            } else if (stickY < -0.05) {
+                gpThrottle = -stickY;
+            }
+            if (lt > 0.2) {
+                gpReverse = true;
+                gpThrottle = Math.max(gpThrottle, lt * 0.6);
+            } else if (stickY > 0.2) {
+                gpReverse = true;
+                gpThrottle = Math.max(gpThrottle, stickY * 0.6);
+            }
+
+            gpLeft = stickX < -GAMEPAD_DEADZONE;
+            gpRight = stickX > GAMEPAD_DEADZONE;
+        }
+    }
+
+    // 3. Combiner clavier + manette
     const combinedThrottle = Math.min(Math.max(gpThrottle, keyboardThrottle), 1.0);
 
     worker.postMessage({
         type: 'boatKeys',
-        up: combinedUp,
-        down: combinedDown,
-        left: combinedLeft,
-        right: combinedRight,
+        up: boatKeysState.up || gpThrottle > 0.05,
+        down: boatKeysState.down || gpReverse,
+        left: boatKeysState.left || gpLeft,
+        right: boatKeysState.right || gpRight,
         throttle: combinedThrottle
     });
 }

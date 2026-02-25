@@ -139,12 +139,15 @@ const BOAT_DRAG = 0.985;
 const BOAT_HALF_W = 22;
 const BOAT_HALF_H = 14;
 const BOAT_COLLISION_STIFFNESS = 5000;
-const BOAT_WATER_RESISTANCE = 0.15;
+const BOAT_WATER_RESISTANCE = 0.012;      // Résistance par particule (faible car s'accumule)
+const BOAT_MAX_WATER_FORCE = 600;          // Plafond de la force totale de l'eau sur le bateau
+const BOAT_PROW_PUSH_FACTOR = 2.5;        // Multiplicateur de poussée à la proue (l'eau s'écarte)
+const BOAT_MASS = 80;                      // Masse effective du bateau
 const BOAT_MOTOR_BACK_OFFSET = 10;
 const BOAT_MOTOR_DEPTH = 75;
 const BOAT_MOTOR_WIDTH = 52;
-const BOAT_WATER_CURRENT_FACTOR = 0.08;
-const BOAT_WAVE_TORQUE_FACTOR = 0.0004;
+const BOAT_WATER_CURRENT_FACTOR = 0.35;    // Sensibilité aux courants (sera divisé par sqrt(N))
+const BOAT_WAVE_TORQUE_FACTOR = 0.0003;
 
 // Local gravity active state
 let localGravityActive = false;
@@ -805,9 +808,12 @@ function applyBoatForces() {
 
     // Accumulateurs pour courant environnant (vagues/courants)
     let waterVxSum = 0, waterVySum = 0;
-    let waterNeighborCount = 0;
+    let waterWeightSum = 0;
     const currentDetectRadius = boatR + 60;
     const currentDetectR2 = currentDetectRadius * currentDetectRadius;
+
+    // Accumulateur de résistance (sera plafonné)
+    let resistFx = 0, resistFy = 0;
 
     for (let i = 0; i < particleCount; i++) {
         if (p_frozen[i]) continue;
@@ -823,26 +829,39 @@ function applyBoatForces() {
             const w = 1.0 - Math.sqrt(dist2) / currentDetectRadius;
             waterVxSum += p_vx[i] * w;
             waterVySum += p_vy[i] * w;
-            waterNeighborCount++;
+            waterWeightSum += w;
 
             // Couple de rotation : les particules latérales font tourner le bateau
-            const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
-            const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
-            // Vitesse latérale relative de la particule dans le repère local
+            const clx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
+            const cly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
             const pLocalVy = -p_vx[i] * sinA + p_vy[i] * cosA;
-            boat.torqueFromWater += ly * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
+            boat.torqueFromWater += cly * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
         }
 
         // --- 4. Collisions physiques avec la coque ---
         if (dist2 <= boatR * boatR) {
             const col = collideParticleBox(px, py, pseudoBody);
             if (col) {
-                const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
+                // Déterminer si la particule est devant le bateau (proue)
+                const localX = ddx * cosA + ddy * sinA;
+                const prowFactor = localX > 0 ? BOAT_PROW_PUSH_FACTOR : 1.0;
+
+                // Pousser les particules : plus fort à la proue pour que l'eau s'écarte
+                const forceMag = col.dist * BOAT_COLLISION_STIFFNESS * prowFactor;
                 p_fx[i] += col.nx * forceMag;
                 p_fy[i] += col.ny * forceMag;
-                // Feedback toujours actif (pas seulement quand on appuie sur les touches)
-                boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
-                boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+
+                // Donner aux particules une vitesse d'écartement dans la direction du bateau
+                // Cela simule le déplacement de l'eau par la coque
+                if (boatSpeed > 30) {
+                    const pushStrength = boatSpeed * 0.3 * prowFactor;
+                    p_vx[i] += col.nx * pushStrength;
+                    p_vy[i] += col.ny * pushStrength;
+                }
+
+                // Feedback sur le bateau (accumulation plafonnée)
+                resistFx -= col.nx * col.dist * BOAT_COLLISION_STIFFNESS * BOAT_WATER_RESISTANCE;
+                resistFy -= col.ny * col.dist * BOAT_COLLISION_STIFFNESS * BOAT_WATER_RESISTANCE;
             }
         }
 
@@ -856,7 +875,6 @@ function applyBoatForces() {
 
         if (behind && (boatKeys.throttle > 0 || boatKeys.down || boatSpeed > 50)) {
             const dir = boatKeys.down ? -1 : 1;
-            // Force proportionnelle au throttle quand on avance, sinon inertie
             const throttleScale = boatKeys.throttle > 0 ? boatKeys.throttle : (boatSpeed > 50 ? speedFactor * 0.5 : 0);
 
             p_fx[i] -= cosA * dynamicMotorForce * dir * throttleScale;
@@ -881,13 +899,25 @@ function applyBoatForces() {
         }
     }
 
-    // --- 7. Appliquer la force des courants/vagues sur le bateau ---
-    if (waterNeighborCount > 0) {
-        const avgWaterVx = waterVxSum / waterNeighborCount;
-        const avgWaterVy = waterVySum / waterNeighborCount;
-        // Force proportionnelle à la différence de vitesse entre l'eau et le bateau
-        boat.fx += (avgWaterVx - boat.vx) * BOAT_WATER_CURRENT_FACTOR * waterNeighborCount;
-        boat.fy += (avgWaterVy - boat.vy) * BOAT_WATER_CURRENT_FACTOR * waterNeighborCount;
+    // --- 7. Plafonner et appliquer la résistance de l'eau ---
+    const resistMag = Math.sqrt(resistFx * resistFx + resistFy * resistFy);
+    if (resistMag > BOAT_MAX_WATER_FORCE) {
+        const scale = BOAT_MAX_WATER_FORCE / resistMag;
+        resistFx *= scale;
+        resistFy *= scale;
+    }
+    boat.fx += resistFx;
+    boat.fy += resistFy;
+
+    // --- 8. Appliquer la force des courants/vagues sur le bateau ---
+    // Utilise la moyenne pondérée (pas linéaire en nb de particules)
+    if (waterWeightSum > 0.1) {
+        const avgWaterVx = waterVxSum / waterWeightSum;
+        const avgWaterVy = waterVySum / waterWeightSum;
+        // Force proportionnelle à la vitesse relative, échelle sous-linéaire
+        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum);
+        boat.fx += (avgWaterVx - boat.vx) * currentScale / BOAT_MASS;
+        boat.fy += (avgWaterVy - boat.vy) * currentScale / BOAT_MASS;
     }
 }
 
@@ -922,12 +952,13 @@ function integrateBoat() {
     const cosA = Math.cos(boat.angle);
     const sinA = Math.sin(boat.angle);
 
-    // Accélération dans la direction du bateau
-    const ax = cosA * thrust;
-    const ay = sinA * thrust;
+    // Accélération dans la direction du bateau (thrust = accélération directe)
+    // Forces de l'eau (boat.fx) = forces, divisées par la masse pour obtenir l'accélération
+    const ax = cosA * thrust + (boat.fx || 0) / BOAT_MASS;
+    const ay = sinA * thrust + (boat.fy || 0) / BOAT_MASS;
 
-    boat.vx += (ax + (boat.fx || 0)) * dt;
-    boat.vy += (ay + (boat.fy || 0)) * dt;
+    boat.vx += ax * dt;
+    boat.vy += ay * dt;
 
     // Friction latérale (pour éviter que le bateau "glisse" de côté)
     const forwardVel = boat.vx * cosA + boat.vy * sinA;
