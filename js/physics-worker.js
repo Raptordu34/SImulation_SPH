@@ -788,39 +788,82 @@ function applyBoatForces() {
     if (!boat) return;
     boat.fx = 0;
     boat.fy = 0;
+    
     const anyKey = boatKeys.up || boatKeys.down || boatKeys.left || boatKeys.right;
     const pseudoBody = { x: boat.x, y: boat.y, angle: boat.angle, halfW: BOAT_HALF_W, halfH: BOAT_HALF_H };
     const cosA = Math.cos(boat.angle), sinA = Math.sin(boat.angle);
     const boatR = Math.sqrt(BOAT_HALF_W * BOAT_HALF_W + BOAT_HALF_H * BOAT_HALF_H) + PARTICLE_RADIUS + 5;
-    const motorStrength = toolStrength * BOAT_MOTOR_FACTOR;
+    
+    // --- 1. Calcul de la vitesse du bateau ---
+    const boatSpeed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
+    const speedFactor = Math.min(boatSpeed / 850, 1.0); // 850 est la vitesse max définie dans integrateBoat
+    
+    // --- 2. Configuration de la force du "Vent" (Moteur/Sillage) ---
+    // Force de base très élevée, amplifiée jusqu'à x3.5 à pleine vitesse
+    const baseMotorForce = 15000; 
+    const dynamicMotorForce = baseMotorForce + (baseMotorForce * 2.5 * speedFactor);
     const stern = -BOAT_HALF_W - BOAT_MOTOR_BACK_OFFSET;
 
     for (let i = 0; i < particleCount; i++) {
         if (p_frozen[i]) continue;
         const px = p_x[i], py = p_y[i];
         const ddx = px - boat.x, ddy = py - boat.y;
-        if (ddx * ddx + ddy * ddy > boatR * boatR) continue;
+        
+        // Optimisation : on ignore les particules très lointaines
+        // On élargit un peu la zone de détection pour inclure le sillage étendu
+        if (ddx * ddx + ddy * ddy > (boatR + 150) * (boatR + 150)) continue;
 
-        const col = collideParticleBox(px, py, pseudoBody);
-        if (col) {
-            const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
-            p_fx[i] += col.nx * forceMag;
-            p_fy[i] += col.ny * forceMag;
-            if (anyKey) {
-                boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
-                boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+        // --- 3. Collisions physiques avec la coque ---
+        if (ddx * ddx + ddy * ddy <= boatR * boatR) {
+            const col = collideParticleBox(px, py, pseudoBody);
+            if (col) {
+                const forceMag = col.dist * BOAT_COLLISION_STIFFNESS;
+                p_fx[i] += col.nx * forceMag;
+                p_fy[i] += col.ny * forceMag;
+                if (anyKey) {
+                    boat.fx -= col.nx * forceMag * BOAT_WATER_RESISTANCE;
+                    boat.fy -= col.ny * forceMag * BOAT_WATER_RESISTANCE;
+                }
             }
         }
 
-        // Zone moteur : décalée à l'arrière, pousse l'eau (comme l'outil vent), puissance = force des outils
+        // --- 4. Effet "Vent" : Propulsion du moteur et remous ---
+        // Coordonnées locales pour vérifier si l'eau est derrière le bateau
         const lx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
         const ly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
-        const behind = lx < stern && lx > stern - BOAT_MOTOR_DEPTH && Math.abs(ly) < BOAT_MOTOR_WIDTH;
-        if (behind) {
-            const pushX = -cosA * motorStrength;
-            const pushY = -sinA * motorStrength;
-            p_fx[i] += pushX;
-            p_fy[i] += pushY;
+        
+        // La zone d'impact s'allonge et s'élargit avec la vitesse
+        const wakeLength = BOAT_MOTOR_DEPTH + (120 * speedFactor);
+        const wakeWidth = BOAT_MOTOR_WIDTH + (30 * speedFactor);
+        const behind = lx < stern && lx > stern - wakeLength && Math.abs(ly) < wakeWidth;
+        
+        // S'active si on utilise les touches OU si le bateau a de l'inertie (> 50 de vitesse)
+        if (behind && (boatKeys.up || boatKeys.down || boatSpeed > 50)) {
+            // Poussée inversée si on recule
+            const dir = boatKeys.down ? -1 : 1; 
+            
+            // On repousse violemment les particules opposées à l'angle du bateau (effet vent SPH)
+            p_fx[i] -= cosA * dynamicMotorForce * dir;
+            p_fy[i] -= sinA * dynamicMotorForce * dir;
+
+            // --- 5. Feedback Visuel : Mousse spectaculaire ---
+            // Le taux d'apparition de la mousse augmente avec la vitesse
+            const foamThreshold = 0.96 - (0.45 * speedFactor); 
+            if (xorshift() > foamThreshold && foamCount < MAX_FOAM) {
+                foam_x[foamCount] = px;
+                foam_y[foamCount] = py;
+                
+                // Vitesse d'éjection des bulles de mousse
+                const ejectSpeed = 250 + 450 * speedFactor;
+                foam_vx[foamCount] = p_vx[i] * 0.2 - cosA * ejectSpeed * dir + (xorshift() - 0.5) * 150;
+                foam_vy[foamCount] = p_vy[i] * 0.2 - sinA * ejectSpeed * dir + (xorshift() - 0.5) * 150;
+                
+                // Durée de vie et taille grandissent à haute vitesse
+                foam_life[foamCount] = 0.5 + xorshift() * (0.3 + speedFactor * 0.6); 
+                foam_size[foamCount] = 0.8 + xorshift() * (0.8 + speedFactor * 1.5); 
+                
+                foamCount++;
+            }
         }
     }
 }
@@ -832,16 +875,45 @@ function integrateBoat() {
     if (!boat) return;
     const dt = DT / SUBSTEPS;
 
-    let ax = 0, ay = 0;
-    if (boatKeys.up) ay -= BOAT_THRUST;
-    if (boatKeys.down) ay += BOAT_THRUST;
-    if (boatKeys.left) ax -= BOAT_THRUST;
-    if (boatKeys.right) ax += BOAT_THRUST;
+    // Logique de gouvernail et de moteur
+    let thrust = 0;
+    let turnSpeed = 0;
+
+    if (boatKeys.up) thrust += BOAT_THRUST;
+    if (boatKeys.down) thrust -= BOAT_THRUST * 0.4; // Marche arrière plus lente
+    if (boatKeys.left) turnSpeed -= 3.5;            // Vitesse de rotation
+    if (boatKeys.right) turnSpeed += 3.5;
+
+    // Le bateau ne peut tourner efficacement que s'il a de la vitesse
+    const speed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
+    const speedFactor = Math.min(speed / 200, 1.0); 
+    
+    // Si on force la rotation sur place à basse vitesse
+    const actualTurn = turnSpeed * (0.3 + 0.7 * speedFactor);
+    boat.angle += actualTurn * dt;
+
+    // Vecteur de direction
+    const cosA = Math.cos(boat.angle);
+    const sinA = Math.sin(boat.angle);
+
+    // Accélération dans la direction du bateau
+    const ax = cosA * thrust;
+    const ay = sinA * thrust;
 
     boat.vx += (ax + (boat.fx || 0)) * dt;
     boat.vy += (ay + (boat.fy || 0)) * dt;
-    boat.vx *= BOAT_DRAG;
-    boat.vy *= BOAT_DRAG;
+
+    // Friction latérale (pour éviter que le bateau "glisse" de côté comme une voiture sur la glace)
+    const forwardVel = boat.vx * cosA + boat.vy * sinA;
+    const lateralVel = boat.vx * -sinA + boat.vy * cosA;
+    
+    // Appliquer une forte résistance au dérapage
+    const dampedLateral = lateralVel * 0.92; 
+    const dampedForward = forwardVel * BOAT_DRAG;
+
+    // Reconstruire le vecteur vitesse
+    boat.vx = dampedForward * cosA - dampedLateral * sinA;
+    boat.vy = dampedForward * sinA + dampedLateral * cosA;
 
     const maxSpeed = 850;
     const v2 = boat.vx * boat.vx + boat.vy * boat.vy;
@@ -854,34 +926,12 @@ function integrateBoat() {
     boat.x += boat.vx * dt;
     boat.y += boat.vy * dt;
 
-    // Orientation : au repos on garde la direction (pas de rotation par les particules)
-    let targetAngle = boat.angle;
-    if (ax !== 0 || ay !== 0) {
-        targetAngle = Math.atan2(ay, ax);
-    }
-    let da = targetAngle - boat.angle;
-    while (da > Math.PI) da -= 2 * Math.PI;
-    while (da < -Math.PI) da += 2 * Math.PI;
-    boat.angle += da * BOAT_ANGLE_SMOOTH;
-
-    // Rebond sur les bords du conteneur
+    // Rebond sur les bords
     const margin = 2;
-    if (boat.x - BOAT_HALF_W < margin) {
-        boat.x = margin + BOAT_HALF_W;
-        boat.vx *= -0.4;
-    }
-    if (boat.x + BOAT_HALF_W > width - margin) {
-        boat.x = width - margin - BOAT_HALF_W;
-        boat.vx *= -0.4;
-    }
-    if (boat.y - BOAT_HALF_H < margin) {
-        boat.y = margin + BOAT_HALF_H;
-        boat.vy *= -0.4;
-    }
-    if (boat.y + BOAT_HALF_H > height - margin) {
-        boat.y = height - margin - BOAT_HALF_H;
-        boat.vy *= -0.4;
-    }
+    if (boat.x - BOAT_HALF_W < margin) { boat.x = margin + BOAT_HALF_W; boat.vx *= -0.4; }
+    if (boat.x + BOAT_HALF_W > width - margin) { boat.x = width - margin - BOAT_HALF_W; boat.vx *= -0.4; }
+    if (boat.y - BOAT_HALF_H < margin) { boat.y = margin + BOAT_HALF_H; boat.vy *= -0.4; }
+    if (boat.y + BOAT_HALF_H > height - margin) { boat.y = height - margin - BOAT_HALF_H; boat.vy *= -0.4; }
 }
 
 // ==========================================
@@ -1367,11 +1417,35 @@ self.onmessage = function(e) {
             cols = Math.ceil(width / H);
             rows = Math.ceil(height / H);
             initArrays();
-            addParticles(1800, width / 2 - 200, height / 4);
+            
+            // 1. Remplir l'écran de particules (Océan)
+            const spacing = PARTICLE_RADIUS * 2.1;
+            const columns = Math.floor(width / spacing);
+            const rowsCount = Math.floor(height / spacing);
+            const totalParticles = Math.min(columns * rowsCount, MAX_PARTICLES - 500);
+            
+            // Désactiver la gravité pour la vue de dessus avant de spawner
+            GRAVITY_Y = 0;
+            GRAVITY_X = 0;
+            
+            for (let i = 0; i < totalParticles; i++) {
+                p_x[i] = (i % columns) * spacing + spacing;
+                p_y[i] = Math.floor(i / columns) * spacing + spacing;
+                p_vx[i] = 0; p_vy[i] = 0;
+                particleCount++;
+            }
+
+            // 2. Placer le bateau au centre
+            boat = {
+                x: width / 2,
+                y: height / 2,
+                vx: 0, vy: 0,
+                angle: -Math.PI / 2, // Pointer vers le haut
+                fx: 0, fy: 0
+            };
+
             if (useMultiWorker) {
-                // Wait for sub-workers to be ready before starting
                 pendingSimStart = true;
-                // If they're already ready (unlikely but safe)
                 if (subWorkersReady === numSubWorkers) {
                     pendingSimStart = false;
                     simLoop();

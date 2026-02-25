@@ -149,11 +149,11 @@ export class UI {
         // Current params (mutable, bound to Tweakpane)
         this.params = {
             // Physics
-            gravity: 1200,
-            gasConst: 3000,
-            nearGasConst: 5000,
-            viscosity: 80,
-            surfaceTension: 1000,
+            gravity: 0,            // 0G par défaut
+            gasConst: 4000,        // Forte pression pour éviter que les particules s'agglomèrent
+            nearGasConst: 6000,
+            viscosity: 60,         // Viscosité moyenne pour de belles vagues
+            surfaceTension: 1500,
             // Render
             mode: 'water',
             waterColor: { r: 6, g: 182, b: 212 },

@@ -28,7 +28,7 @@ overlayCanvas.width = width;
 overlayCanvas.height = height;
 
 // Set initial tool cursor
-container.setAttribute('data-tool', 'push');
+container.setAttribute('data-tool', 'boat');
 
 // ==========================================
 // WEBGL2 RENDERER

@@ -139,13 +139,13 @@ in vec2 v_uv;
 
 uniform sampler2D u_surfaceTex;    // normal.xy, thickness, mask
 uniform sampler2D u_thicknessTex;  // accumulated thickness
-uniform sampler2D u_backgroundTex; // grid background
+uniform sampler2D u_backgroundTex; // (Désactivé) Ancien fond de grille
 uniform sampler2D u_densityTex;    // raw density for color
 uniform sampler2D u_shadowTex;     // shadow map
 
 uniform vec3 u_waterColor;
 uniform vec3 u_deepColor;
-uniform vec3 u_lightDir;       // normalized light direction
+uniform vec3 u_lightDir;       
 uniform float u_specularPower;
 uniform float u_specularIntensity;
 uniform float u_refractionStrength;
@@ -200,23 +200,24 @@ void main() {
     vec4 surface = texture(u_surfaceTex, v_uv);
     float mask = surface.a;
 
-    if (mask < 0.01) {
-        // No fluid here - draw background with optional caustics + shadows
-        vec4 bg = texture(u_backgroundTex, v_uv);
+    // --- MAGIE ICI : Création de la couleur des abysses ---
+    // On prend la couleur de profondeur (deepColor) et on la rend encore plus sombre
+    vec3 abyssColor = u_deepColor * 0.25; 
 
-        // Apply shadows on background
+    if (mask < 0.01) {
+        // Le sillage du bateau a creusé l'eau, il n'y a plus de particules en surface.
+        // Au lieu d'afficher la grille, on affiche les profondeurs de l'océan.
+        vec4 bg = vec4(abyssColor, 1.0);
+
         if (u_shadowEnabled == 1) {
             float shadow = texture(u_shadowTex, v_uv).r;
             bg.rgb *= mix(1.0, 0.4, shadow);
         }
 
         if (u_causticsEnabled == 1) {
-            // Light caustics on the background where fluid is nearby
-            float nearbyFluid = texture(u_thicknessTex, v_uv).r;
-            if (nearbyFluid > 0.05) {
-                float c = caustics(v_uv, u_time) * nearbyFluid * 0.3;
-                bg.rgb += vec3(0.3, 0.5, 0.7) * c;
-            }
+            // On laisse de légères caustiques animées dans le fond pour simuler la lumière qui pénètre
+            float c = caustics(v_uv, u_time) * 0.15;
+            bg.rgb += vec3(0.2, 0.4, 0.6) * c;
         }
 
         fragColor = bg;
@@ -226,35 +227,33 @@ void main() {
     // Unpack normals
     vec2 normal = surface.xy * 2.0 - 1.0;
     float thickness = texture(u_thicknessTex, v_uv).r;
-    vec4 densityColor = texture(u_densityTex, v_uv);
 
-    // === REFRACTION ===
-    vec2 refractedUV = v_uv + normal * u_refractionStrength * thickness * 0.02;
-    refractedUV = clamp(refractedUV, 0.0, 1.0);
-    vec3 background = texture(u_backgroundTex, refractedUV).rgb;
+    // === REFRACTION SUR L'ABYSSE ===
+    // La lumière qui traverse les particules réfracte maintenant l'eau profonde, plus la grille
+    vec3 background = abyssColor;
 
-    // Apply shadows on refracted background
     if (u_shadowEnabled == 1) {
+        vec2 refractedUV = v_uv + normal * u_refractionStrength * thickness * 0.02;
+        refractedUV = clamp(refractedUV, 0.0, 1.0);
         float shadow = texture(u_shadowTex, refractedUV).r;
         background *= mix(1.0, 0.4, shadow);
     }
 
     // === BEER-LAMBERT ABSORPTION ===
-    // Different absorption per channel (red absorbs fastest)
-    vec3 absorption = vec3(0.8, 0.3, 0.15); // R absorbs most, B least
+    vec3 absorption = vec3(0.8, 0.3, 0.15); 
     vec3 transmittance = exp(-absorption * thickness * 1.5);
-
-    // Mix base water color with depth
     vec3 waterCol = mix(u_deepColor, u_waterColor, transmittance);
 
-    // Combine refracted background with water color based on thickness
-    float opacity = 1.0 - exp(-thickness * 2.0);
-    vec3 color = mix(background, waterCol, opacity * 0.85);
+    // === FUSION DOUCE SURFACE / FOND ===
+    // Quand l'eau devient très fine (bords du sillage), elle devient transparente
+    // et se fond parfaitement avec la couleur abyssale
+    float opacity = 1.0 - exp(-thickness * 2.5);
+    vec3 color = mix(background, waterCol, opacity * 0.95);
 
     // === SPECULAR (Blinn-Phong) ===
     vec3 N = normalize(vec3(normal, 1.0));
     vec3 L = normalize(u_lightDir);
-    vec3 V = vec3(0.0, 0.0, 1.0); // view from front
+    vec3 V = vec3(0.0, 0.0, 1.0); 
     vec3 halfVec = normalize(L + V);
     float spec = pow(max(dot(N, halfVec), 0.0), u_specularPower);
     color += vec3(1.0) * spec * u_specularIntensity;
@@ -262,10 +261,8 @@ void main() {
     // === ENVIRONMENT REFLECTION ===
     if (u_envReflectionStrength > 0.001) {
         vec3 R = reflect(-V, N);
-        // Procedural environment: sky gradient + horizon glow
         float envY = R.y * 0.5 + 0.5;
         vec3 skyColor = mix(vec3(0.12, 0.15, 0.25), vec3(0.5, 0.7, 1.0), envY);
-        // Add subtle horizon glow
         float horizonGlow = exp(-abs(R.y) * 4.0);
         skyColor += vec3(0.4, 0.5, 0.6) * horizonGlow * 0.3;
         float fresnel = pow(1.0 - max(dot(vec3(normal, 0.5), V), 0.0), u_fresnelPower);
@@ -282,7 +279,7 @@ void main() {
         color += vec3(0.4, 0.6, 0.8) * c * 0.15 * transmittance;
     }
 
-    // === AMBIENT OCCLUSION approximation ===
+    // === AMBIENT OCCLUSION ===
     float ao = smoothstep(0.1, 0.6, thickness);
     color *= mix(0.7, 1.0, ao);
 
