@@ -147,7 +147,7 @@ const BOAT_MOTOR_BACK_OFFSET = 10;
 const BOAT_MOTOR_DEPTH = 75;
 const BOAT_MOTOR_WIDTH = 52;
 const BOAT_WATER_CURRENT_FACTOR = 0.35;    // Sensibilité aux courants (sera divisé par sqrt(N))
-const BOAT_WAVE_TORQUE_FACTOR = 0.0003;
+const BOAT_WAVE_TORQUE_FACTOR = 0.0001; // (Au lieu de 0.0003) Limite les rotations brutales
 
 // Local gravity active state
 let localGravityActive = false;
@@ -910,17 +910,22 @@ function applyBoatForces() {
     boat.fy += resistFy;
 
     // --- 8. Appliquer la force des courants/vagues sur le bateau ---
-    // Utilise la moyenne pondérée (pas linéaire en nb de particules)
     if (waterWeightSum > 0.1) {
         const avgWaterVx = waterVxSum / waterWeightSum;
         const avgWaterVy = waterVySum / waterWeightSum;
-        // Force proportionnelle à la vitesse relative, échelle sous-linéaire
-        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum);
-        boat.fx += (avgWaterVx - boat.vx) * currentScale / BOAT_MASS;
-        boat.fy += (avgWaterVy - boat.vy) * currentScale / BOAT_MASS;
+        
+        // La force de dérive est proportionnelle à la différence de vitesse (Courant - Bateau)
+        // On multiplie par BOAT_MASS car elle sera divisée dans integrateBoat.
+        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum) * BOAT_MASS * 1.5;
+        
+        boat.fx += (avgWaterVx - boat.vx) * currentScale;
+        boat.fy += (avgWaterVy - boat.vy) * currentScale;
     }
 }
 
+// ==========================================
+// BATEAU JOUEUR (ZQSD, vue dessus, 0G)
+// ==========================================
 // ==========================================
 // BATEAU JOUEUR (ZQSD, vue dessus, 0G)
 // ==========================================
@@ -928,43 +933,81 @@ function integrateBoat() {
     if (!boat) return;
     const dt = DT / SUBSTEPS;
 
-    // Logique de gouvernail et de moteur avec puissance variable
     let thrust = 0;
     let turnSpeed = 0;
-    const throttle = boatKeys.throttle || 0; // 0..1 puissance variable
+    const throttle = boatKeys.throttle || 0;
 
     if (throttle > 0) thrust += BOAT_THRUST * throttle;
     if (boatKeys.down) thrust -= BOAT_THRUST * 0.4 * Math.max(throttle, 0.5);
     if (boatKeys.left) turnSpeed -= 3.5;
     if (boatKeys.right) turnSpeed += 3.5;
 
-    // Le bateau ne peut tourner efficacement que s'il a de la vitesse
     const speed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
-    const speedFactor = Math.min(speed / 200, 1.0);
+    const speedFactor = Math.min(speed / 300, 1.0);
 
-    // Rotation : gouvernail + couple des vagues
+    // --- EFFET DE QUILLE (Keel Effect) RENFORCÉ ---
+    // À haute vitesse, l'eau ne peut plus du tout faire pivoter le bateau
+    const keelFactor = Math.max(0.0, 1.0 - (speedFactor * 1.5)); 
+
+    // Rotation : Gouvernail
     const actualTurn = turnSpeed * (0.3 + 0.7 * speedFactor);
     boat.angle += actualTurn * dt;
-    // Les vagues/courants appliquent un couple sur le bateau
-    boat.angle += (boat.torqueFromWater || 0) * dt;
+    
+    // Rotation : Vagues (limitées et amorties par la vitesse)
+    let waterTorque = boat.torqueFromWater || 0;
+    
+    // CORRECTION : Le joueur tourne à 3.5, l'eau ne doit pas être plus forte que lui.
+    // On bride drastiquement le couple de rotation que les vagues peuvent infliger.
+    const maxTorque = 1.2; 
+    if (waterTorque > maxTorque) waterTorque = maxTorque;
+    if (waterTorque < -maxTorque) waterTorque = -maxTorque;
+    
+    boat.angle += waterTorque * keelFactor * dt;
 
-    // Vecteur de direction
+    // --- STABILITÉ HYDRODYNAMIQUE (Auto-alignement) ---
+    // Si le bateau avance vite et qu'on ne tourne pas, la pression de l'eau 
+    // redresse naturellement la coque dans l'axe de son mouvement.
+    if (turnSpeed === 0 && speed > 50) {
+        let velAngle = Math.atan2(boat.vy, boat.vx);
+        let angleDiff = velAngle - boat.angle;
+        
+        // Normalisation de l'angle pour trouver le chemin le plus court (entre -PI et PI)
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        
+        // On redresse le bateau vers son vecteur vitesse (effet "flèche")
+        boat.angle += angleDiff * speedFactor * 4.0 * dt;
+    }
+
     const cosA = Math.cos(boat.angle);
     const sinA = Math.sin(boat.angle);
 
-    // Accélération dans la direction du bateau (thrust = accélération directe)
-    // Forces de l'eau (boat.fx) = forces, divisées par la masse pour obtenir l'accélération
-    const ax = cosA * thrust + (boat.fx || 0) / BOAT_MASS;
-    const ay = sinA * thrust + (boat.fy || 0) / BOAT_MASS;
+    // --- Décomposition des forces de l'eau ---
+    let waterAx = (boat.fx || 0) / BOAT_MASS;
+    let waterAy = (boat.fy || 0) / BOAT_MASS;
+
+    let waterForwardA = waterAx * cosA + waterAy * sinA;
+    let waterLateralA = waterAx * -sinA + waterAy * cosA;
+
+    // La coque (la quille) résiste fortement à la dérive latérale de l'eau
+    waterLateralA *= keelFactor;
+
+    waterAx = waterForwardA * cosA - waterLateralA * sinA;
+    waterAy = waterForwardA * sinA + waterLateralA * cosA;
+
+    // Application finale de l'accélération (Moteur + Eau)
+    const ax = cosA * thrust + waterAx;
+    const ay = sinA * thrust + waterAy;
 
     boat.vx += ax * dt;
     boat.vy += ay * dt;
 
-    // Friction latérale (pour éviter que le bateau "glisse" de côté)
+    // --- Friction directionnelle stricte ---
     const forwardVel = boat.vx * cosA + boat.vy * sinA;
     const lateralVel = boat.vx * -sinA + boat.vy * cosA;
 
-    const dampedLateral = lateralVel * 0.92;
+    // Le bateau glisse très peu de côté (il reste sur ses rails)
+    const dampedLateral = lateralVel * (0.90 - speedFactor * 0.10);
     const dampedForward = forwardVel * BOAT_DRAG;
 
     boat.vx = dampedForward * cosA - dampedLateral * sinA;

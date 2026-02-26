@@ -645,21 +645,67 @@ export class ToolManager {
         // Bateau (vue dessus)
         if (this.boatData) {
             const x = this.boatData.x, y = this.boatData.y, a = this.boatData.angle;
-            const hw = 22, hh = 14;
+            const length = 24; // Demi-longueur
+            const width = 14;  // Demi-largeur
+            
             ctx.save();
             ctx.translate(x, y);
             ctx.rotate(a);
-            ctx.fillStyle = 'rgba(59, 130, 246, 0.7)';
-            ctx.strokeStyle = 'rgba(147, 197, 253, 0.95)';
-            ctx.lineWidth = 2;
+            
+            // Ombre portée sous le bateau
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+            ctx.shadowBlur = 8;
+            ctx.shadowOffsetY = 3;
+            
+            // Coque principale profilée
+            ctx.fillStyle = '#f8fafc'; // Blanc éclatant
+            ctx.strokeStyle = '#94a3b8'; // Contour gris
+            ctx.lineWidth = 1.5;
+            
             ctx.beginPath();
-            ctx.moveTo(hw, 0);
-            ctx.lineTo(-hw * 0.7, hh);
-            ctx.lineTo(-hw * 0.5, 0);
-            ctx.lineTo(-hw * 0.7, -hh);
+            ctx.moveTo(length, 0); // Pointe avant
+            ctx.bezierCurveTo(length * 0.5, width * 1.1, -length * 0.8, width * 1.0, -length, width * 0.8); // Bord droit
+            ctx.lineTo(-length, -width * 0.8); // Ligne arrière
+            ctx.bezierCurveTo(-length * 0.8, -width * 1.0, length * 0.5, -width * 1.1, length, 0); // Bord gauche
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
+            
+            // Désactiver l'ombre pour peindre l'intérieur
+            ctx.shadowColor = 'transparent';
+            
+            // Pont intérieur (finition bois)
+            ctx.fillStyle = '#b45309'; 
+            ctx.beginPath();
+            ctx.moveTo(length * 0.4, 0);
+            ctx.bezierCurveTo(length * 0.2, width * 0.6, -length * 0.8, width * 0.6, -length * 0.8, width * 0.5);
+            ctx.lineTo(-length * 0.8, -width * 0.5);
+            ctx.bezierCurveTo(-length * 0.8, -width * 0.6, length * 0.2, -width * 0.6, length * 0.4, 0);
+            ctx.fill();
+            
+            // Pare-brise (Verre teinté courbe)
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.beginPath();
+            ctx.moveTo(length * 0.2, 0);
+            ctx.quadraticCurveTo(0, width * 0.8, -length * 0.2, width * 0.65);
+            ctx.lineTo(-length * 0.2, -width * 0.65);
+            ctx.quadraticCurveTo(0, -width * 0.8, length * 0.2, 0);
+            ctx.fill();
+
+            // Moteur hors-bord (Bloc noir à l'arrière)
+            ctx.fillStyle = '#1e293b';
+            ctx.beginPath();
+            ctx.roundRect(-length - 6, -5, 10, 10, 2);
+            ctx.fill();
+            
+            // Ligne de flottaison centrale (Déco sportive)
+            ctx.strokeStyle = '#0284c7';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(length * 0.7, 0);
+            ctx.lineTo(-length * 0.6, 0);
+            ctx.stroke();
+            
             ctx.restore();
         }
 
@@ -776,13 +822,20 @@ export class ToolManager {
             }
 
             case 'boat': {
-                ctx.strokeStyle = 'rgba(59, 130, 246, 0.8)';
-                ctx.lineWidth = 1;
+                ctx.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+                ctx.lineWidth = 1.5;
                 ctx.beginPath();
-                ctx.moveTo(x + 14, y);
-                ctx.lineTo(x - 10, y + 8);
-                ctx.lineTo(x - 6, y);
-                ctx.lineTo(x - 10, y - 8);
+                // Coque
+                ctx.moveTo(x + 16, y);
+                ctx.quadraticCurveTo(x + 8, y + 10, x - 16, y + 8);
+                ctx.lineTo(x - 16, y - 8);
+                ctx.quadraticCurveTo(x + 8, y - 10, x + 16, y);
+                ctx.stroke();
+                // Pare-brise simplifié
+                ctx.beginPath();
+                ctx.moveTo(x + 4, y);
+                ctx.lineTo(x - 4, y + 6);
+                ctx.lineTo(x - 4, y - 6);
                 ctx.closePath();
                 ctx.stroke();
                 break;
