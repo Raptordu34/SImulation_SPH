@@ -8,22 +8,22 @@ export const PRESETS = {
     water: {
         name: 'Eau',
         physics: {
-            gravity: 1200,
-            gasConst: 3000,
-            nearGasConst: 5000,
-            viscosity: 5,
-            surfaceTension: 1000
+            gravity: 1500,          // Increased gravity for heavier movement
+            gasConst: 5000,         // Less compressible water
+            nearGasConst: 10000,    // Stronger proximity repulsion
+            viscosity: 2,           // Lower viscosity for realistic flow
+            surfaceTension: 600     // Reduced surface tension
         },
         render: {
-            waterColor: [0.024, 0.714, 0.831],
-            deepColor: [0.02, 0.15, 0.35],
-            specularPower: 40,
-            specularIntensity: 0.8,
-            refractionStrength: 1.5,
-            fresnelPower: 3.0,
-            threshold: 0.2,
-            particleSize: 28,
-            causticsEnabled: true,
+            waterColor: [0.10, 0.45, 0.75], // Natural marine blue
+            deepColor: [0.02, 0.10, 0.25],  // Darker depths
+            specularPower: 45,
+            specularIntensity: 1.0,
+            refractionStrength: 1.2,
+            fresnelPower: 2.5,
+            threshold: 0.18,
+            particleSize: 22,              // Smaller particles for liquid appearance
+            causticsEnabled: false,
             foamEnabled: true
         }
     },
@@ -89,7 +89,7 @@ export const PRESETS = {
             fresnelPower: 3.5,
             threshold: 0.18,
             particleSize: 26,
-            causticsEnabled: true,
+            causticsEnabled: false,
             foamEnabled: false
         }
     },
@@ -133,7 +133,7 @@ export const PRESETS = {
             fresnelPower: 2.5,
             threshold: 0.15,
             particleSize: 22,
-            causticsEnabled: true,
+            causticsEnabled: false,
             foamEnabled: true
         }
     }

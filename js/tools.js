@@ -67,7 +67,12 @@ export class ToolManager {
         // Active tool info element
         this.toolInfoEl = document.getElementById('active-tool-info');
 
+        // Cached sprites (pre-rendered once)
+        this.boatSprite = null;
+        this.enemySprite = null;
+
         this._initEvents();
+        this._initSpriteCache();
     }
 
     setTool(tool) {
@@ -235,6 +240,117 @@ export class ToolManager {
                 this.walls = e.data.walls;
             }
         });
+    }
+
+    _initSpriteCache() {
+        this.boatSprite = this._buildBoatSprite();
+        this.enemySprite = this._buildEnemySprite();
+    }
+
+    _buildBoatSprite() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 72;
+        canvas.height = 56;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const length = 24;
+        const width = 14;
+        const cx = canvas.width * 0.5;
+        const cy = canvas.height * 0.5;
+
+        ctx.translate(cx, cy);
+
+        ctx.fillStyle = '#f8fafc';
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(length, 0);
+        ctx.bezierCurveTo(length * 0.5, width * 1.1, -length * 0.8, width * 1.0, -length, width * 0.8);
+        ctx.lineTo(-length, -width * 0.8);
+        ctx.bezierCurveTo(-length * 0.8, -width * 1.0, length * 0.5, -width * 1.1, length, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#b45309';
+        ctx.beginPath();
+        ctx.moveTo(length * 0.4, 0);
+        ctx.bezierCurveTo(length * 0.2, width * 0.6, -length * 0.8, width * 0.6, -length * 0.8, width * 0.5);
+        ctx.lineTo(-length * 0.8, -width * 0.5);
+        ctx.bezierCurveTo(-length * 0.8, -width * 0.6, length * 0.2, -width * 0.6, length * 0.4, 0);
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.beginPath();
+        ctx.moveTo(length * 0.2, 0);
+        ctx.quadraticCurveTo(0, width * 0.8, -length * 0.2, width * 0.65);
+        ctx.lineTo(-length * 0.2, -width * 0.65);
+        ctx.quadraticCurveTo(0, -width * 0.8, length * 0.2, 0);
+        ctx.fill();
+
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.roundRect(-length - 6, -5, 10, 10, 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#0284c7';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(length * 0.7, 0);
+        ctx.lineTo(-length * 0.6, 0);
+        ctx.stroke();
+
+        return canvas;
+    }
+
+    _buildEnemySprite() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 52;
+        canvas.height = 38;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        const eLen = 16;
+        const eWid = 10;
+        const cx = canvas.width * 0.5;
+        const cy = canvas.height * 0.5;
+
+        ctx.translate(cx, cy);
+
+        ctx.fillStyle = '#1e1e1e';
+        ctx.strokeStyle = '#dc2626';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(eLen, 0);
+        ctx.bezierCurveTo(eLen * 0.5, eWid * 1.1, -eLen * 0.8, eWid, -eLen, eWid * 0.8);
+        ctx.lineTo(-eLen, -eWid * 0.8);
+        ctx.bezierCurveTo(-eLen * 0.8, -eWid, eLen * 0.5, -eWid * 1.1, eLen, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(255,60,60,0.7)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(eLen * 0.6, 0);
+        ctx.lineTo(-eLen * 0.5, 0);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(220,40,40,0.6)';
+        ctx.beginPath();
+        ctx.moveTo(eLen * 0.15, 0);
+        ctx.quadraticCurveTo(0, eWid * 0.65, -eLen * 0.15, eWid * 0.5);
+        ctx.lineTo(-eLen * 0.15, -eWid * 0.5);
+        ctx.quadraticCurveTo(0, -eWid * 0.65, eLen * 0.15, 0);
+        ctx.fill();
+
+        ctx.fillStyle = '#991b1b';
+        ctx.beginPath();
+        ctx.roundRect(-eLen - 4, -3.5, 7, 7, 1.5);
+        ctx.fill();
+
+        return canvas;
     }
 
     _onDown(pos) {
@@ -809,61 +925,16 @@ export class ToolManager {
 
         // Bateau (vue dessus)
         if (this.boatData) {
-            const x = this.boatData.x, y = this.boatData.y, a = this.boatData.angle;
-            const length = 24; // Demi-longueur
-            const width = 14;  // Demi-largeur
-            
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.rotate(a);
-            
-            // Coque principale profilée
-            ctx.fillStyle = '#f8fafc';
-            ctx.strokeStyle = '#94a3b8';
-            ctx.lineWidth = 1.5;
-            
-            ctx.beginPath();
-            ctx.moveTo(length, 0); // Pointe avant
-            ctx.bezierCurveTo(length * 0.5, width * 1.1, -length * 0.8, width * 1.0, -length, width * 0.8); // Bord droit
-            ctx.lineTo(-length, -width * 0.8); // Ligne arrière
-            ctx.bezierCurveTo(-length * 0.8, -width * 1.0, length * 0.5, -width * 1.1, length, 0); // Bord gauche
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            
-            // Pont intérieur (finition bois)
-            ctx.fillStyle = '#b45309'; 
-            ctx.beginPath();
-            ctx.moveTo(length * 0.4, 0);
-            ctx.bezierCurveTo(length * 0.2, width * 0.6, -length * 0.8, width * 0.6, -length * 0.8, width * 0.5);
-            ctx.lineTo(-length * 0.8, -width * 0.5);
-            ctx.bezierCurveTo(-length * 0.8, -width * 0.6, length * 0.2, -width * 0.6, length * 0.4, 0);
-            ctx.fill();
-            
-            // Pare-brise (Verre teinté courbe)
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-            ctx.beginPath();
-            ctx.moveTo(length * 0.2, 0);
-            ctx.quadraticCurveTo(0, width * 0.8, -length * 0.2, width * 0.65);
-            ctx.lineTo(-length * 0.2, -width * 0.65);
-            ctx.quadraticCurveTo(0, -width * 0.8, length * 0.2, 0);
-            ctx.fill();
-
-            // Moteur hors-bord (Bloc noir à l'arrière)
-            ctx.fillStyle = '#1e293b';
-            ctx.beginPath();
-            ctx.roundRect(-length - 6, -5, 10, 10, 2);
-            ctx.fill();
-            
-            // Ligne de flottaison centrale (Déco sportive)
-            ctx.strokeStyle = '#0284c7';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(length * 0.7, 0);
-            ctx.lineTo(-length * 0.6, 0);
-            ctx.stroke();
-            
-            ctx.restore();
+            const x = this.boatData.x;
+            const y = this.boatData.y;
+            const a = this.boatData.angle;
+            if (this.boatSprite) {
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(a);
+                ctx.drawImage(this.boatSprite, -this.boatSprite.width * 0.5, -this.boatSprite.height * 0.5);
+                ctx.restore();
+            }
         }
 
         // ==========================================
@@ -919,41 +990,9 @@ export class ToolManager {
                 ctx.translate(ex, ey);
                 ctx.rotate(ea);
 
-                // Hull - dark red
-                ctx.fillStyle = '#1e1e1e';
-                ctx.strokeStyle = '#dc2626';
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.moveTo(eLen, 0);
-                ctx.bezierCurveTo(eLen * 0.5, eWid * 1.1, -eLen * 0.8, eWid, -eLen, eWid * 0.8);
-                ctx.lineTo(-eLen, -eWid * 0.8);
-                ctx.bezierCurveTo(-eLen * 0.8, -eWid, eLen * 0.5, -eWid * 1.1, eLen, 0);
-                ctx.closePath();
-                ctx.fill();
-                ctx.stroke();
-
-                // Danger stripe
-                ctx.strokeStyle = 'rgba(255,60,60,0.7)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(eLen * 0.6, 0);
-                ctx.lineTo(-eLen * 0.5, 0);
-                ctx.stroke();
-
-                // Windshield
-                ctx.fillStyle = 'rgba(220,40,40,0.6)';
-                ctx.beginPath();
-                ctx.moveTo(eLen * 0.15, 0);
-                ctx.quadraticCurveTo(0, eWid * 0.65, -eLen * 0.15, eWid * 0.5);
-                ctx.lineTo(-eLen * 0.15, -eWid * 0.5);
-                ctx.quadraticCurveTo(0, -eWid * 0.65, eLen * 0.15, 0);
-                ctx.fill();
-
-                // Engine block
-                ctx.fillStyle = '#991b1b';
-                ctx.beginPath();
-                ctx.roundRect(-eLen - 4, -3.5, 7, 7, 1.5);
-                ctx.fill();
+                if (this.enemySprite) {
+                    ctx.drawImage(this.enemySprite, -this.enemySprite.width * 0.5, -this.enemySprite.height * 0.5);
+                }
 
                 ctx.restore();
 
@@ -1136,11 +1175,10 @@ export class ToolManager {
         ctx.arc(0, 0, 25, 0, Math.PI * 2);
         ctx.stroke();
 
-        // Inner glow
-        const grad = ctx.createRadialGradient(0, 0, 5, 0, 0, 25);
-        grad.addColorStop(0, colorBase + '0.4)');
-        grad.addColorStop(1, colorBase + '0.0)');
-        ctx.fillStyle = grad;
+        // Inner fill (cheap, no radial gradient)
+        ctx.fillStyle = colorBase + '0.2)';
+        ctx.beginPath();
+        ctx.arc(0, 0, 24, 0, Math.PI * 2);
         ctx.fill();
 
         // Spinning particles
@@ -1167,10 +1205,7 @@ export class ToolManager {
             case 'push': {
                 ctx.beginPath();
                 ctx.arc(x, y, 45, 0, Math.PI * 2);
-                const grad = ctx.createRadialGradient(x - 8, y - 8, 3, x, y, 45);
-                grad.addColorStop(0, 'rgba(255,255,255,0.35)');
-                grad.addColorStop(1, 'rgba(255,255,255,0.03)');
-                ctx.fillStyle = grad;
+                ctx.fillStyle = 'rgba(255,255,255,0.08)';
                 ctx.fill();
                 ctx.strokeStyle = 'rgba(255,255,255,0.5)';
                 ctx.lineWidth = 1.5;

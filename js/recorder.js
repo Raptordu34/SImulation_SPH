@@ -79,10 +79,23 @@ export class Recorder {
     }
 
     screenshot() {
-        const dataURL = this.canvas.toDataURL('image/png');
-        const a = document.createElement('a');
-        a.href = dataURL;
-        a.download = `sph-screenshot-${Date.now()}.png`;
-        a.click();
+        requestAnimationFrame(() => {
+            this.canvas.toBlob((blob) => {
+                if (!blob) {
+                    const dataURL = this.canvas.toDataURL('image/png');
+                    const a = document.createElement('a');
+                    a.href = dataURL;
+                    a.download = `sph-screenshot-${Date.now()}.png`;
+                    a.click();
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `sph-screenshot-${Date.now()}.png`;
+                a.click();
+                URL.revokeObjectURL(url);
+            }, 'image/png');
+        });
     }
 }

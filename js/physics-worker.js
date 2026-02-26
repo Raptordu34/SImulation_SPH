@@ -9,7 +9,7 @@ const H = 35;
 const H2 = H * H;
 const PARTICLE_RADIUS = 9;
 const REST_DENS = 3.0;
-const DT = 0.016;
+const DT = 0.014;
 const SUBSTEPS = 2;
 const WALL_STIFFNESS = 5000;
 const MOUSE_RADIUS = 45;
@@ -146,68 +146,8 @@ const BOAT_MASS = 80;                      // Masse effective du bateau
 const BOAT_MOTOR_BACK_OFFSET = 10;
 const BOAT_MOTOR_DEPTH = 75;
 const BOAT_MOTOR_WIDTH = 52;
-const BOAT_WATER_CURRENT_FACTOR = 0.35;    // Sensibilité aux courants (sera divisé par sqrt(N))
-const BOAT_WAVE_TORQUE_FACTOR = 0.0001; // (Au lieu de 0.0003) Limite les rotations brutales
-
-// Missile du bateau
-let boatMissile = null; // { x, y, vx, vy }
-const MISSILE_SPEED = 550;
-const MISSILE_EXPLOSION_RADIUS = 180;
-const MISSILE_EXPLOSION_STRENGTH = 5000;
-
-// ==========================================
-// ENNEMIS IA
-// ==========================================
-let enemies = [];
-let enemyMissiles = [];   // { x, y, vx, vy, owner }
-let nextEnemyId = 1;
-let enemySpawnTimer = 0;
-const MAX_ENEMIES = 6;
-const ENEMY_HALF_W = 16;
-const ENEMY_HALF_H = 10;
-const ENEMY_SPEED = 120;
-const ENEMY_THRUST = 400;
-const ENEMY_DRAG = 0.98;
-const ENEMY_HP = 3;       // Chaque ennemi prend 1 hit pour mourir si explosion proche
-const ENEMY_MISSILE_SPEED = 400;
-const ENEMY_SHOOT_INTERVAL_MIN = 2.5;  // secondes
-const ENEMY_SHOOT_INTERVAL_MAX = 5.0;
-const ENEMY_MISSILE_PRECISION = 0.35;  // radians d'erreur max
-const ENEMY_SPAWN_INTERVAL = 4.0;      // secondes entre spawns
-
-// Joueur : HP et score
-let playerHP = 100;
-let playerMaxHP = 100;
-let playerScore = 0;
-let playerAlive = true;
-
-// ==========================================
-// VAMPIRE SURVIVOR — AUTO-FIRE & LEVELING
-// ==========================================
-let playerLevel = 1;
-let playerXP = 0;
-let playerXPToNext = 50;
-let gamePaused = false;
-let gameTime = 0; // temps total de jeu en secondes
-
-// Auto-fire stats (upgradeable)
-let autoFireInterval = 1.0;
-let bulletDamage = 1;
-let bulletSpeed = 500;
-let bulletSize = 4;
-let bulletCount = 1;
-let bulletPiercing = 0;
-let hpRegen = 0;
-let autoFireTimer = 0;
-
-const upgradeLevels = {
-    fireRate: 0, damage: 0, bulletSpeed: 0, multishot: 0,
-    piercing: 0, maxHP: 0, regen: 0, bulletSize: 0
-};
-
-let playerBullets = [];
-const MAX_PLAYER_BULLETS = 200;
-const transferBullets = new Float32Array(MAX_PLAYER_BULLETS * 5);
+const BOAT_WATER_CURRENT_FACTOR = 0.05;    // Reduced from 0.35 to minimize drift
+const BOAT_WAVE_TORQUE_FACTOR = 0.00002;   // Reduced from 0.0003 to minimize unintended rotation
 
 // Local gravity active state
 let localGravityActive = false;
@@ -737,7 +677,7 @@ function applyRigidBodyForces() {
         }
     }
 
-    // Buoyancy: use spatial grid instead of brute-force
+    // Buoyancy: count nearby particles
     for (let b = 0; b < rigidBodies.length; b++) {
         const body = rigidBodies[b];
         let bRadius;
@@ -750,26 +690,10 @@ function applyRigidBodyForces() {
         }
         const checkR = bRadius + H;
         const checkR2 = checkR * checkR;
-
-        // Use grid to find nearby particles
-        const bCx = Math.max(0, Math.min(cols - 1, (body.x / H) | 0));
-        const bCy = Math.max(0, Math.min(rows - 1, (body.y / H) | 0));
-        const gridRadius = Math.ceil(checkR / H);
-        const cxMin = Math.max(0, bCx - gridRadius);
-        const cxMax = Math.min(cols - 1, bCx + gridRadius);
-        const cyMin = Math.max(0, bCy - gridRadius);
-        const cyMax = Math.min(rows - 1, bCy + gridRadius);
-
         let submerged = 0;
-        for (let cy = cyMin; cy <= cyMax; cy++) {
-            for (let cx = cxMin; cx <= cxMax; cx++) {
-                let j = cellHead[cx + cy * cols];
-                while (j !== -1) {
-                    const ddx = p_x[j] - body.x, ddy = p_y[j] - body.y;
-                    if (ddx * ddx + ddy * ddy < checkR2) submerged++;
-                    j = particleNext[j];
-                }
-            }
+        for (let i = 0; i < particleCount; i++) {
+            const ddx = p_x[i] - body.x, ddy = p_y[i] - body.y;
+            if (ddx * ddx + ddy * ddy < checkR2) submerged++;
         }
         body.fy -= submerged * 0.8 * GRAVITY_Y * (body.mass / 60.0);
     }
@@ -986,22 +910,17 @@ function applyBoatForces() {
     boat.fy += resistFy;
 
     // --- 8. Appliquer la force des courants/vagues sur le bateau ---
+    // Utilise la moyenne pondérée (pas linéaire en nb de particules)
     if (waterWeightSum > 0.1) {
         const avgWaterVx = waterVxSum / waterWeightSum;
         const avgWaterVy = waterVySum / waterWeightSum;
-        
-        // La force de dérive est proportionnelle à la différence de vitesse (Courant - Bateau)
-        // On multiplie par BOAT_MASS car elle sera divisée dans integrateBoat.
-        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum) * BOAT_MASS * 1.5;
-        
-        boat.fx += (avgWaterVx - boat.vx) * currentScale;
-        boat.fy += (avgWaterVy - boat.vy) * currentScale;
+        // Force proportionnelle à la vitesse relative, échelle sous-linéaire
+        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum);
+        boat.fx += (avgWaterVx - boat.vx) * currentScale / BOAT_MASS;
+        boat.fy += (avgWaterVy - boat.vy) * currentScale / BOAT_MASS;
     }
 }
 
-// ==========================================
-// BATEAU JOUEUR (ZQSD, vue dessus, 0G)
-// ==========================================
 // ==========================================
 // BATEAU JOUEUR (ZQSD, vue dessus, 0G)
 // ==========================================
@@ -1009,81 +928,43 @@ function integrateBoat() {
     if (!boat) return;
     const dt = DT / SUBSTEPS;
 
+    // Logique de gouvernail et de moteur avec puissance variable
     let thrust = 0;
     let turnSpeed = 0;
-    const throttle = boatKeys.throttle || 0;
+    const throttle = boatKeys.throttle || 0; // 0..1 puissance variable
 
     if (throttle > 0) thrust += BOAT_THRUST * throttle;
     if (boatKeys.down) thrust -= BOAT_THRUST * 0.4 * Math.max(throttle, 0.5);
     if (boatKeys.left) turnSpeed -= 3.5;
     if (boatKeys.right) turnSpeed += 3.5;
 
+    // Le bateau ne peut tourner efficacement que s'il a de la vitesse
     const speed = Math.sqrt(boat.vx * boat.vx + boat.vy * boat.vy);
-    const speedFactor = Math.min(speed / 300, 1.0);
+    const speedFactor = Math.min(speed / 200, 1.0);
 
-    // --- EFFET DE QUILLE (Keel Effect) RENFORCÉ ---
-    // À haute vitesse, l'eau ne peut plus du tout faire pivoter le bateau
-    const keelFactor = Math.max(0.0, 1.0 - (speedFactor * 1.5)); 
-
-    // Rotation : Gouvernail
+    // Rotation : gouvernail + couple des vagues
     const actualTurn = turnSpeed * (0.3 + 0.7 * speedFactor);
     boat.angle += actualTurn * dt;
-    
-    // Rotation : Vagues (limitées et amorties par la vitesse)
-    let waterTorque = boat.torqueFromWater || 0;
-    
-    // CORRECTION : Le joueur tourne à 3.5, l'eau ne doit pas être plus forte que lui.
-    // On bride drastiquement le couple de rotation que les vagues peuvent infliger.
-    const maxTorque = 1.2; 
-    if (waterTorque > maxTorque) waterTorque = maxTorque;
-    if (waterTorque < -maxTorque) waterTorque = -maxTorque;
-    
-    boat.angle += waterTorque * keelFactor * dt;
+    // Les vagues/courants appliquent un couple sur le bateau
+    boat.angle += (boat.torqueFromWater || 0) * dt;
 
-    // --- STABILITÉ HYDRODYNAMIQUE (Auto-alignement) ---
-    // Si le bateau avance vite et qu'on ne tourne pas, la pression de l'eau 
-    // redresse naturellement la coque dans l'axe de son mouvement.
-    if (turnSpeed === 0 && speed > 50) {
-        let velAngle = Math.atan2(boat.vy, boat.vx);
-        let angleDiff = velAngle - boat.angle;
-        
-        // Normalisation de l'angle pour trouver le chemin le plus court (entre -PI et PI)
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        
-        // On redresse le bateau vers son vecteur vitesse (effet "flèche")
-        boat.angle += angleDiff * speedFactor * 4.0 * dt;
-    }
-
+    // Vecteur de direction
     const cosA = Math.cos(boat.angle);
     const sinA = Math.sin(boat.angle);
 
-    // --- Décomposition des forces de l'eau ---
-    let waterAx = (boat.fx || 0) / BOAT_MASS;
-    let waterAy = (boat.fy || 0) / BOAT_MASS;
-
-    let waterForwardA = waterAx * cosA + waterAy * sinA;
-    let waterLateralA = waterAx * -sinA + waterAy * cosA;
-
-    // La coque (la quille) résiste fortement à la dérive latérale de l'eau
-    waterLateralA *= keelFactor;
-
-    waterAx = waterForwardA * cosA - waterLateralA * sinA;
-    waterAy = waterForwardA * sinA + waterLateralA * cosA;
-
-    // Application finale de l'accélération (Moteur + Eau)
-    const ax = cosA * thrust + waterAx;
-    const ay = sinA * thrust + waterAy;
+    // Accélération dans la direction du bateau (thrust = accélération directe)
+    // Forces de l'eau (boat.fx) = forces, divisées par la masse pour obtenir l'accélération
+    const ax = cosA * thrust + (boat.fx || 0) / BOAT_MASS;
+    const ay = sinA * thrust + (boat.fy || 0) / BOAT_MASS;
 
     boat.vx += ax * dt;
     boat.vy += ay * dt;
 
-    // --- Friction directionnelle stricte ---
+    // Friction latérale (pour éviter que le bateau "glisse" de côté)
     const forwardVel = boat.vx * cosA + boat.vy * sinA;
     const lateralVel = boat.vx * -sinA + boat.vy * cosA;
 
-    // Le bateau glisse très peu de côté (il reste sur ses rails)
-    const dampedLateral = lateralVel * (0.90 - speedFactor * 0.10);
+    const dampedLateral = lateralVel * 0.92;
     const dampedForward = forwardVel * BOAT_DRAG;
 
     boat.vx = dampedForward * cosA - dampedLateral * sinA;
@@ -1445,8 +1326,6 @@ function step() {
     integrate();
     integrateRigidBodies();
     integrateBoat();
-    integratePlayerBullets();
-    updateEnemies();
     updateFoam();
     processEmitters(DT);
 }
@@ -1459,17 +1338,8 @@ let running = true;
 function simLoop() {
     if (!running) return;
 
-    if (!gamePaused) {
-        for (let i = 0; i < SUBSTEPS; i++) {
-            step();
-        }
-        // Per-frame logic
-        autoFire();
-        gameTime += DT;
-        // HP regen
-        if (boat && playerAlive && hpRegen > 0) {
-            playerHP = Math.min(playerHP + hpRegen * DT, playerMaxHP);
-        }
+    for (let i = 0; i < SUBSTEPS; i++) {
+        step();
     }
 
     // Sim FPS tracking
@@ -1519,16 +1389,6 @@ function simLoop() {
         transferRigidBodies[off + 15] = body.colorB;
     }
 
-    // Fill player bullets transfer buffer
-    for (let i = 0; i < playerBullets.length; i++) {
-        const b = playerBullets[i];
-        transferBullets[i * 5] = b.x;
-        transferBullets[i * 5 + 1] = b.y;
-        transferBullets[i * 5 + 2] = b.vx;
-        transferBullets[i * 5 + 3] = b.vy;
-        transferBullets[i * 5 + 4] = b.size;
-    }
-
     self.postMessage({
         type: 'frame',
         positions: transferPos.subarray(0, particleCount * 2),
@@ -1544,450 +1404,10 @@ function simLoop() {
         workerCount: numSubWorkers,
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
         rigidBodyCount: rbCount,
-        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null,
-        enemies: enemies.map(e => ({ id: e.id, x: e.x, y: e.y, angle: e.angle, hp: e.hp, maxHP: e.maxHP || ENEMY_HP, alive: e.alive })),
-        playerBullets: transferBullets.subarray(0, playerBullets.length * 5),
-        playerBulletCount: playerBullets.length,
-        playerHP,
-        playerMaxHP,
-        playerScore,
-        playerAlive,
-        playerLevel,
-        playerXP,
-        playerXPToNext,
-        gamePaused,
-        gameTime
+        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null
     });
 
-    setTimeout(simLoop, 8);
-}
-
-// ==========================================
-// MISSILE INTEGRATION
-// ==========================================
-function integrateMissile() {
-    if (!boatMissile) return;
-    const dt = DT / SUBSTEPS;
-    boatMissile.x += boatMissile.vx * dt;
-    boatMissile.y += boatMissile.vy * dt;
-    // Disparaît si hors écran
-    if (boatMissile.x < -50 || boatMissile.x > width + 50 ||
-        boatMissile.y < -50 || boatMissile.y > height + 50) {
-        boatMissile = null;
-    }
-}
-
-function detonateMissile() {
-    if (!boatMissile) return;
-    const ex = boatMissile.x, ey = boatMissile.y;
-    explosions.push({
-        x: ex,
-        y: ey,
-        age: 0,
-        maxAge: 0.6,
-        strength: MISSILE_EXPLOSION_STRENGTH,
-        radius: MISSILE_EXPLOSION_RADIUS
-    });
-    // Vérifier si des ennemis sont touchés par l'explosion
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        const en = enemies[i];
-        const dx = en.x - ex, dy = en.y - ey;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < MISSILE_EXPLOSION_RADIUS * 0.6) {
-            en.hp -= 3; // Kill en 1 explosion directe
-            if (en.hp <= 0) {
-                destroyEnemy(i);
-            }
-        } else if (dist < MISSILE_EXPLOSION_RADIUS) {
-            en.hp -= 1;
-            // Repousser l'ennemi
-            const pushF = 300 * (1 - dist / MISSILE_EXPLOSION_RADIUS);
-            en.vx += (dx / dist) * pushF;
-            en.vy += (dy / dist) * pushF;
-            if (en.hp <= 0) {
-                destroyEnemy(i);
-            }
-        }
-    }
-    // Burst massif de mousse à l'impact (effet spectaculaire)
-    for (let i = 0; i < 45 && foamCount < MAX_FOAM; i++) {
-        const angle = xorshift() * Math.PI * 2;
-        const speed = 200 + xorshift() * 600;
-        foam_x[foamCount] = ex + (xorshift() - 0.5) * 35;
-        foam_y[foamCount] = ey + (xorshift() - 0.5) * 35;
-        foam_vx[foamCount] = Math.cos(angle) * speed;
-        foam_vy[foamCount] = Math.sin(angle) * speed;
-        foam_life[foamCount] = 0.6 + xorshift() * 0.8;
-        foam_size[foamCount] = 1.5 + xorshift() * 2.0;
-        foamCount++;
-    }
-    boatMissile = null;
-}
-
-function destroyEnemy(index) {
-    const en = enemies[index];
-    // Explosion visuelle
-    explosions.push({
-        x: en.x, y: en.y,
-        age: 0, maxAge: 0.7,
-        strength: 3000,
-        radius: 140
-    });
-    // Mousse de débris
-    for (let i = 0; i < 30 && foamCount < MAX_FOAM; i++) {
-        const angle = xorshift() * Math.PI * 2;
-        const speed = 150 + xorshift() * 400;
-        foam_x[foamCount] = en.x + (xorshift() - 0.5) * 20;
-        foam_y[foamCount] = en.y + (xorshift() - 0.5) * 20;
-        foam_vx[foamCount] = Math.cos(angle) * speed;
-        foam_vy[foamCount] = Math.sin(angle) * speed;
-        foam_life[foamCount] = 0.5 + xorshift() * 0.6;
-        foam_size[foamCount] = 1.0 + xorshift() * 1.5;
-        foamCount++;
-    }
-    // Notifier le main thread de l'explosion
-    self.postMessage({ type: 'enemyDestroyed', x: en.x, y: en.y, id: en.id });
-    playerScore += 100;
-    playerXP += 25 + playerLevel * 5;
-    checkLevelUp();
-    enemies.splice(index, 1);
-}
-
-// ==========================================
-// ENNEMIS IA : UPDATE
-// ==========================================
-function updateEnemies() {
-    if (!boat || !playerAlive) return;
-    const dt = DT / SUBSTEPS;
-
-    // Spawn timer — scales with level & time
-    const spawnInterval = Math.max(0.6, ENEMY_SPAWN_INTERVAL - playerLevel * 0.25 - gameTime * 0.005);
-    const maxEnemies = MAX_ENEMIES + playerLevel * 2 + Math.floor(gameTime / 30);
-    enemySpawnTimer += dt;
-    if (enemySpawnTimer >= spawnInterval && enemies.length < maxEnemies) {
-        enemySpawnTimer = 0;
-        spawnEnemy();
-    }
-
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        const en = enemies[i];
-
-        // Vampire Survivor: toujours foncer vers le joueur
-        const toPlayerX = boat.x - en.x;
-        const toPlayerY = boat.y - en.y;
-        const distToPlayer = Math.sqrt(toPlayerX * toPlayerX + toPlayerY * toPlayerY);
-        let desiredAngle = Math.atan2(toPlayerY, toPlayerX);
-
-        // Tourner progressivement vers l'angle désiré
-        let angleDiff = desiredAngle - en.angle;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        en.angle += angleDiff * 2.5 * dt;
-
-        // Poussée
-        const cosA = Math.cos(en.angle), sinA = Math.sin(en.angle);
-        en.vx += cosA * ENEMY_THRUST * dt;
-        en.vy += sinA * ENEMY_THRUST * dt;
-        en.vx *= ENEMY_DRAG;
-        en.vy *= ENEMY_DRAG;
-
-        // Limiter la vitesse (scale avec le level)
-        const currentEnemySpeed = ENEMY_SPEED + playerLevel * 5;
-        const sp2 = en.vx * en.vx + en.vy * en.vy;
-        if (sp2 > currentEnemySpeed * currentEnemySpeed) {
-            const r = currentEnemySpeed / Math.sqrt(sp2);
-            en.vx *= r;
-            en.vy *= r;
-        }
-
-        en.x += en.vx * dt;
-        en.y += en.vy * dt;
-
-        // Rebond sur les bords
-        const m = 10;
-        if (en.x < m) { en.x = m; en.vx = Math.abs(en.vx); }
-        if (en.x > width - m) { en.x = width - m; en.vx = -Math.abs(en.vx); }
-        if (en.y < m) { en.y = m; en.vy = Math.abs(en.vy); }
-        if (en.y > height - m) { en.y = height - m; en.vy = -Math.abs(en.vy); }
-
-        // Collision directe ennemi-joueur (dégâts de contact — VS style)
-        if (distToPlayer < (BOAT_HALF_W + ENEMY_HALF_W) * 0.8) {
-            playerHP -= 0.3 * dt * 60; // ~0.3 HP par frame de contact
-            // Repousser les deux
-            const pushX = toPlayerX / (distToPlayer + 1) * 200;
-            const pushY = toPlayerY / (distToPlayer + 1) * 200;
-            en.vx -= pushX * dt;
-            en.vy -= pushY * dt;
-        }
-    }
-
-    // Vérifier mort du joueur
-    if (playerHP <= 0) {
-        playerHP = 0;
-        playerAlive = false;
-        // Explosion du joueur
-        if (boat) {
-            explosions.push({
-                x: boat.x, y: boat.y,
-                age: 0, maxAge: 1.0,
-                strength: 6000,
-                radius: 250
-            });
-            self.postMessage({ type: 'playerDied', x: boat.x, y: boat.y, score: playerScore });
-        }
-    }
-}
-
-function updateEnemyMissiles() {
-    if (!boat) return;
-    const dt = DT / SUBSTEPS;
-
-    for (let i = enemyMissiles.length - 1; i >= 0; i--) {
-        const m = enemyMissiles[i];
-        m.x += m.vx * dt;
-        m.y += m.vy * dt;
-
-        // Hors écran
-        if (m.x < -60 || m.x > width + 60 || m.y < -60 || m.y > height + 60) {
-            enemyMissiles.splice(i, 1);
-            continue;
-        }
-
-        // Collision avec le joueur
-        if (playerAlive && boat) {
-            const dx = m.x - boat.x, dy = m.y - boat.y;
-            const dist2 = dx * dx + dy * dy;
-            const hitR = BOAT_HALF_W + 5;
-            if (dist2 < hitR * hitR) {
-                playerHP -= 12; // 12 HP de dégâts par missile
-                // Petite explosion
-                explosions.push({
-                    x: m.x, y: m.y,
-                    age: 0, maxAge: 0.3,
-                    strength: 1500,
-                    radius: 80
-                });
-                for (let f = 0; f < 8 && foamCount < MAX_FOAM; f++) {
-                    const angle = xorshift() * Math.PI * 2;
-                    const speed = 100 + xorshift() * 200;
-                    foam_x[foamCount] = m.x;
-                    foam_y[foamCount] = m.y;
-                    foam_vx[foamCount] = Math.cos(angle) * speed;
-                    foam_vy[foamCount] = Math.sin(angle) * speed;
-                    foam_life[foamCount] = 0.3 + xorshift() * 0.3;
-                    foam_size[foamCount] = 0.8 + xorshift() * 0.8;
-                    foamCount++;
-                }
-                self.postMessage({ type: 'playerHit', x: m.x, y: m.y, hp: playerHP });
-                enemyMissiles.splice(i, 1);
-                continue;
-            }
-        }
-    }
-}
-
-function spawnEnemy() {
-    // Spawn sur un bord aléatoire
-    const side = Math.floor(xorshift() * 4);
-    let sx, sy;
-    const margin = 30;
-    if (side === 0) { sx = margin; sy = margin + xorshift() * (height - margin * 2); }        // gauche
-    else if (side === 1) { sx = width - margin; sy = margin + xorshift() * (height - margin * 2); } // droite
-    else if (side === 2) { sx = margin + xorshift() * (width - margin * 2); sy = margin; }     // haut
-    else { sx = margin + xorshift() * (width - margin * 2); sy = height - margin; }             // bas
-
-    const angleToCenter = Math.atan2(height / 2 - sy, width / 2 - sx);
-    const scaledHP = ENEMY_HP + Math.floor(playerLevel / 2);
-    enemies.push({
-        id: nextEnemyId++,
-        x: sx, y: sy,
-        vx: 0, vy: 0,
-        angle: angleToCenter,
-        hp: scaledHP,
-        maxHP: scaledHP,
-        alive: true,
-        shootTimer: 0,
-        orbitDir: xorshift() > 0.5 ? 1 : -1
-    });
-}
-
-// ==========================================
-// VAMPIRE SURVIVOR — AUTO-FIRE
-// ==========================================
-function autoFire() {
-    if (!boat || !playerAlive || enemies.length === 0 || gamePaused) return;
-
-    autoFireTimer += DT;
-    if (autoFireTimer < autoFireInterval) return;
-    autoFireTimer -= autoFireInterval;
-
-    // Sort enemies by distance to player
-    const sorted = enemies.map((e, idx) => {
-        const dx = e.x - boat.x, dy = e.y - boat.y;
-        return { idx, d2: dx * dx + dy * dy };
-    }).sort((a, b) => a.d2 - b.d2);
-
-    for (let b = 0; b < bulletCount; b++) {
-        if (playerBullets.length >= MAX_PLAYER_BULLETS) break;
-
-        const targetInfo = sorted[Math.min(b, sorted.length - 1)];
-        const target = enemies[targetInfo.idx];
-        const dx = target.x - boat.x;
-        const dy = target.y - boat.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 1) continue;
-
-        let angle = Math.atan2(dy, dx);
-        // Slight spread for multishot
-        if (bulletCount > 1) {
-            const spread = 0.15;
-            const offset = (b - (bulletCount - 1) / 2) * spread;
-            angle += offset;
-        }
-
-        playerBullets.push({
-            x: boat.x + Math.cos(angle) * (BOAT_HALF_W + 5),
-            y: boat.y + Math.sin(angle) * (BOAT_HALF_W + 5),
-            vx: Math.cos(angle) * bulletSpeed,
-            vy: Math.sin(angle) * bulletSpeed,
-            damage: bulletDamage,
-            size: bulletSize,
-            piercing: bulletPiercing,
-            pierced: 0
-        });
-    }
-}
-
-// ==========================================
-// PLAYER BULLETS INTEGRATION
-// ==========================================
-function integratePlayerBullets() {
-    const dt = DT / SUBSTEPS;
-
-    for (let i = playerBullets.length - 1; i >= 0; i--) {
-        const b = playerBullets[i];
-        b.x += b.vx * dt;
-        b.y += b.vy * dt;
-
-        // Remove if out of bounds
-        if (b.x < -50 || b.x > width + 50 || b.y < -50 || b.y > height + 50) {
-            playerBullets.splice(i, 1);
-            continue;
-        }
-
-        // Check collision with enemies
-        let removed = false;
-        for (let j = enemies.length - 1; j >= 0; j--) {
-            const en = enemies[j];
-            const dx = b.x - en.x, dy = b.y - en.y;
-            const dist2 = dx * dx + dy * dy;
-            const hitR = b.size + ENEMY_HALF_W;
-            if (dist2 < hitR * hitR) {
-                en.hp -= b.damage;
-                b.pierced++;
-
-                // Knockback
-                const dist = Math.sqrt(dist2) || 1;
-                en.vx += (dx / dist) * 80;
-                en.vy += (dy / dist) * 80;
-
-                // Small foam burst on hit
-                for (let f = 0; f < 3 && foamCount < MAX_FOAM; f++) {
-                    const angle = xorshift() * Math.PI * 2;
-                    const speed = 50 + xorshift() * 100;
-                    foam_x[foamCount] = b.x;
-                    foam_y[foamCount] = b.y;
-                    foam_vx[foamCount] = Math.cos(angle) * speed;
-                    foam_vy[foamCount] = Math.sin(angle) * speed;
-                    foam_life[foamCount] = 0.2 + xorshift() * 0.2;
-                    foam_size[foamCount] = 0.5 + xorshift() * 0.5;
-                    foamCount++;
-                }
-
-                if (en.hp <= 0) {
-                    destroyEnemy(j);
-                }
-
-                if (b.pierced > b.piercing) {
-                    playerBullets.splice(i, 1);
-                    removed = true;
-                    break;
-                }
-            }
-        }
-        if (removed) continue;
-
-        // Bullet water push removed for performance (was O(bullets*particles))
-    }
-}
-
-// ==========================================
-// LEVEL-UP & UPGRADES
-// ==========================================
-function checkLevelUp() {
-    while (playerXP >= playerXPToNext) {
-        playerXP -= playerXPToNext;
-        playerLevel++;
-        playerXPToNext = Math.floor(50 * Math.pow(1.3, playerLevel - 1));
-
-        // Generate 3 random upgrade choices
-        const maxLevels = { fireRate: 8, damage: 8, bulletSpeed: 5, multishot: 4, piercing: 3, maxHP: 5, regen: 5, bulletSize: 5 };
-        const available = Object.keys(upgradeLevels).filter(k => upgradeLevels[k] < maxLevels[k]);
-
-        if (available.length === 0) return;
-
-        // Shuffle
-        for (let i = available.length - 1; i > 0; i--) {
-            const j = Math.floor(xorshift() * (i + 1));
-            [available[i], available[j]] = [available[j], available[i]];
-        }
-
-        const choices = available.slice(0, Math.min(3, available.length)).map(id => ({
-            id,
-            currentLevel: upgradeLevels[id]
-        }));
-
-        gamePaused = true;
-        self.postMessage({ type: 'levelUp', level: playerLevel, choices });
-        break; // Handle one level at a time
-    }
-}
-
-function applyUpgrade(upgradeId) {
-    if (!upgradeLevels.hasOwnProperty(upgradeId)) return;
-    upgradeLevels[upgradeId]++;
-
-    switch (upgradeId) {
-        case 'fireRate':
-            autoFireInterval = Math.max(0.12, 1.0 - upgradeLevels.fireRate * 0.11);
-            break;
-        case 'damage':
-            bulletDamage = 1 + upgradeLevels.damage;
-            break;
-        case 'bulletSpeed':
-            bulletSpeed = 500 + upgradeLevels.bulletSpeed * 80;
-            break;
-        case 'multishot':
-            bulletCount = 1 + upgradeLevels.multishot;
-            break;
-        case 'piercing':
-            bulletPiercing = upgradeLevels.piercing;
-            break;
-        case 'maxHP':
-            playerMaxHP = 100 + upgradeLevels.maxHP * 25;
-            playerHP = Math.min(playerHP + 25, playerMaxHP);
-            break;
-        case 'regen':
-            hpRegen = upgradeLevels.regen * 2;
-            break;
-        case 'bulletSize':
-            bulletSize = 4 + upgradeLevels.bulletSize * 2;
-            break;
-    }
-
-    gamePaused = false;
-    // Check if another level-up is pending
-    checkLevelUp();
+    setTimeout(simLoop, 4);
 }
 
 // ==========================================
@@ -2131,29 +1551,6 @@ self.onmessage = function(e) {
             explosions = [];
             portals = [];
             rigidBodies = [];
-            boatMissile = null;
-            enemies = [];
-            enemyMissiles = [];
-            playerBullets = [];
-            enemySpawnTimer = 0;
-            playerHP = 100;
-            playerMaxHP = 100;
-            playerScore = 0;
-            playerAlive = true;
-            playerLevel = 1;
-            playerXP = 0;
-            playerXPToNext = 50;
-            gamePaused = false;
-            gameTime = 0;
-            autoFireTimer = 0;
-            autoFireInterval = 1.0;
-            bulletDamage = 1;
-            bulletSpeed = 500;
-            bulletSize = 4;
-            bulletCount = 1;
-            bulletPiercing = 0;
-            hpRegen = 0;
-            Object.keys(upgradeLevels).forEach(k => upgradeLevels[k] = 0);
             if (boat) {
                 boat = null;
                 if (gravityStored != null) {
@@ -2309,53 +1706,15 @@ self.onmessage = function(e) {
                 fx: 0,
                 fy: 0
             };
-            // Réinit le mode combat avec VS stats
-            playerHP = playerMaxHP;
-            playerAlive = true;
-            playerScore = 0;
-            playerLevel = 1;
-            playerXP = 0;
-            playerXPToNext = 50;
-            gamePaused = false;
-            gameTime = 0;
-            autoFireTimer = 0;
-            autoFireInterval = 1.0;
-            bulletDamage = 1;
-            bulletSpeed = 500;
-            bulletSize = 4;
-            bulletCount = 1;
-            bulletPiercing = 0;
-            hpRegen = 0;
-            Object.keys(upgradeLevels).forEach(k => upgradeLevels[k] = 0);
-            enemies = [];
-            enemyMissiles = [];
-            playerBullets = [];
-            enemySpawnTimer = 2.0;
             break;
 
         case 'removeBoat':
             boat = null;
-            boatMissile = null;
-            enemies = [];
-            enemyMissiles = [];
-            playerBullets = [];
-            playerAlive = true;
-            playerHP = playerMaxHP;
-            gamePaused = false;
             if (gravityStored != null) {
                 GRAVITY_Y = gravityStored.y;
                 GRAVITY_X = gravityStored.x;
                 gravityStored = null;
             }
-            break;
-
-        case 'applyUpgrade':
-            applyUpgrade(msg.upgradeId);
-            break;
-
-        // Legacy missile commands (disabled for VS mode)
-        case 'fireMissile':
-        case 'detonateMissile':
             break;
 
         case 'boatKeys':
