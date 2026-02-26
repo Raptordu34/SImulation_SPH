@@ -93,10 +93,23 @@ worker.onmessage = function(e) {
             workerCount: msg.workerCount || 0,
             rigidBodies: msg.rigidBodies || null,
             rigidBodyCount: msg.rigidBodyCount ?? 0,
-            boat: msg.boat || null
+            boat: msg.boat || null,
+            missile: msg.missile || null,
+            enemies: msg.enemies || [],
+            enemyMissiles: msg.enemyMissiles || [],
+            playerHP: msg.playerHP ?? 100,
+            playerMaxHP: msg.playerMaxHP ?? 100,
+            playerScore: msg.playerScore ?? 0,
+            playerAlive: msg.playerAlive ?? true
         };
     } else if (msg.type === 'wallsUpdated') {
         toolManager.walls = msg.walls;
+    } else if (msg.type === 'enemyDestroyed') {
+        toolManager.triggerExplosionVFX(msg.x, msg.y, 160);
+    } else if (msg.type === 'playerHit') {
+        toolManager.triggerExplosionVFX(msg.x, msg.y, 80);
+    } else if (msg.type === 'playerDied') {
+        toolManager.triggerExplosionVFX(msg.x, msg.y, 250);
     }
 };
 
@@ -153,6 +166,13 @@ function renderLoop(timestamp) {
         toolManager.rigidBodiesData = latestFrameData.rigidBodies;
         toolManager.rigidBodyCount = latestFrameData.rigidBodyCount ?? 0;
         toolManager.boatData = latestFrameData.boat ?? null;
+        toolManager.missileData = latestFrameData.missile ?? null;
+        toolManager.enemiesData = latestFrameData.enemies;
+        toolManager.enemyMissilesData = latestFrameData.enemyMissiles;
+        toolManager.playerHP = latestFrameData.playerHP;
+        toolManager.playerMaxHP = latestFrameData.playerMaxHP;
+        toolManager.playerScore = latestFrameData.playerScore;
+        toolManager.playerAlive = latestFrameData.playerAlive;
     }
     // Render overlay (tools, cursors, objects)
     toolManager.renderOverlay();

@@ -149,6 +149,38 @@ const BOAT_MOTOR_WIDTH = 52;
 const BOAT_WATER_CURRENT_FACTOR = 0.35;    // Sensibilité aux courants (sera divisé par sqrt(N))
 const BOAT_WAVE_TORQUE_FACTOR = 0.0001; // (Au lieu de 0.0003) Limite les rotations brutales
 
+// Missile du bateau
+let boatMissile = null; // { x, y, vx, vy }
+const MISSILE_SPEED = 550;
+const MISSILE_EXPLOSION_RADIUS = 180;
+const MISSILE_EXPLOSION_STRENGTH = 5000;
+
+// ==========================================
+// ENNEMIS IA
+// ==========================================
+let enemies = [];
+let enemyMissiles = [];   // { x, y, vx, vy, owner }
+let nextEnemyId = 1;
+let enemySpawnTimer = 0;
+const MAX_ENEMIES = 6;
+const ENEMY_HALF_W = 16;
+const ENEMY_HALF_H = 10;
+const ENEMY_SPEED = 120;
+const ENEMY_THRUST = 400;
+const ENEMY_DRAG = 0.98;
+const ENEMY_HP = 3;       // Chaque ennemi prend 1 hit pour mourir si explosion proche
+const ENEMY_MISSILE_SPEED = 400;
+const ENEMY_SHOOT_INTERVAL_MIN = 2.5;  // secondes
+const ENEMY_SHOOT_INTERVAL_MAX = 5.0;
+const ENEMY_MISSILE_PRECISION = 0.35;  // radians d'erreur max
+const ENEMY_SPAWN_INTERVAL = 4.0;      // secondes entre spawns
+
+// Joueur : HP et score
+let playerHP = 100;
+let playerMaxHP = 100;
+let playerScore = 0;
+let playerAlive = true;
+
 // Local gravity active state
 let localGravityActive = false;
 
@@ -1369,6 +1401,9 @@ function step() {
     integrate();
     integrateRigidBodies();
     integrateBoat();
+    integrateMissile();
+    updateEnemies();
+    updateEnemyMissiles();
     updateFoam();
     processEmitters(DT);
 }
@@ -1447,10 +1482,286 @@ function simLoop() {
         workerCount: numSubWorkers,
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
         rigidBodyCount: rbCount,
-        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null
+        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null,
+        missile: boatMissile ? { x: boatMissile.x, y: boatMissile.y, vx: boatMissile.vx, vy: boatMissile.vy } : null,
+        enemies: enemies.map(e => ({ id: e.id, x: e.x, y: e.y, angle: e.angle, hp: e.hp, alive: e.alive })),
+        enemyMissiles: enemyMissiles.map(m => ({ x: m.x, y: m.y, vx: m.vx, vy: m.vy })),
+        playerHP,
+        playerMaxHP,
+        playerScore,
+        playerAlive
     });
 
     setTimeout(simLoop, 4);
+}
+
+// ==========================================
+// MISSILE INTEGRATION
+// ==========================================
+function integrateMissile() {
+    if (!boatMissile) return;
+    const dt = DT / SUBSTEPS;
+    boatMissile.x += boatMissile.vx * dt;
+    boatMissile.y += boatMissile.vy * dt;
+    // Disparaît si hors écran
+    if (boatMissile.x < -50 || boatMissile.x > width + 50 ||
+        boatMissile.y < -50 || boatMissile.y > height + 50) {
+        boatMissile = null;
+    }
+}
+
+function detonateMissile() {
+    if (!boatMissile) return;
+    const ex = boatMissile.x, ey = boatMissile.y;
+    explosions.push({
+        x: ex,
+        y: ey,
+        age: 0,
+        maxAge: 0.6,
+        strength: MISSILE_EXPLOSION_STRENGTH,
+        radius: MISSILE_EXPLOSION_RADIUS
+    });
+    // Vérifier si des ennemis sont touchés par l'explosion
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+        const dx = en.x - ex, dy = en.y - ey;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MISSILE_EXPLOSION_RADIUS * 0.6) {
+            en.hp -= 3; // Kill en 1 explosion directe
+            if (en.hp <= 0) {
+                destroyEnemy(i);
+            }
+        } else if (dist < MISSILE_EXPLOSION_RADIUS) {
+            en.hp -= 1;
+            // Repousser l'ennemi
+            const pushF = 300 * (1 - dist / MISSILE_EXPLOSION_RADIUS);
+            en.vx += (dx / dist) * pushF;
+            en.vy += (dy / dist) * pushF;
+            if (en.hp <= 0) {
+                destroyEnemy(i);
+            }
+        }
+    }
+    // Burst massif de mousse à l'impact (effet spectaculaire)
+    for (let i = 0; i < 45 && foamCount < MAX_FOAM; i++) {
+        const angle = xorshift() * Math.PI * 2;
+        const speed = 200 + xorshift() * 600;
+        foam_x[foamCount] = ex + (xorshift() - 0.5) * 35;
+        foam_y[foamCount] = ey + (xorshift() - 0.5) * 35;
+        foam_vx[foamCount] = Math.cos(angle) * speed;
+        foam_vy[foamCount] = Math.sin(angle) * speed;
+        foam_life[foamCount] = 0.6 + xorshift() * 0.8;
+        foam_size[foamCount] = 1.5 + xorshift() * 2.0;
+        foamCount++;
+    }
+    boatMissile = null;
+}
+
+function destroyEnemy(index) {
+    const en = enemies[index];
+    // Explosion visuelle
+    explosions.push({
+        x: en.x, y: en.y,
+        age: 0, maxAge: 0.7,
+        strength: 3000,
+        radius: 140
+    });
+    // Mousse de débris
+    for (let i = 0; i < 30 && foamCount < MAX_FOAM; i++) {
+        const angle = xorshift() * Math.PI * 2;
+        const speed = 150 + xorshift() * 400;
+        foam_x[foamCount] = en.x + (xorshift() - 0.5) * 20;
+        foam_y[foamCount] = en.y + (xorshift() - 0.5) * 20;
+        foam_vx[foamCount] = Math.cos(angle) * speed;
+        foam_vy[foamCount] = Math.sin(angle) * speed;
+        foam_life[foamCount] = 0.5 + xorshift() * 0.6;
+        foam_size[foamCount] = 1.0 + xorshift() * 1.5;
+        foamCount++;
+    }
+    // Notifier le main thread de l'explosion
+    self.postMessage({ type: 'enemyDestroyed', x: en.x, y: en.y, id: en.id });
+    playerScore += 100;
+    enemies.splice(index, 1);
+}
+
+// ==========================================
+// ENNEMIS IA : UPDATE
+// ==========================================
+function updateEnemies() {
+    if (!boat || !playerAlive) return;
+    const dt = DT / SUBSTEPS;
+
+    // Spawn timer
+    enemySpawnTimer += dt;
+    if (enemySpawnTimer >= ENEMY_SPAWN_INTERVAL && enemies.length < MAX_ENEMIES) {
+        enemySpawnTimer = 0;
+        spawnEnemy();
+    }
+
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const en = enemies[i];
+
+        // --- IA : Navigation vers une position autour du joueur ---
+        const toPlayerX = boat.x - en.x;
+        const toPlayerY = boat.y - en.y;
+        const distToPlayer = Math.sqrt(toPlayerX * toPlayerX + toPlayerY * toPlayerY);
+
+        // L'ennemi essaie de garder une distance de ~200-350px
+        let desiredAngle;
+        if (distToPlayer > 350) {
+            // Se rapprocher
+            desiredAngle = Math.atan2(toPlayerY, toPlayerX);
+        } else if (distToPlayer < 150) {
+            // S'éloigner
+            desiredAngle = Math.atan2(-toPlayerY, -toPlayerX);
+        } else {
+            // Orbiter (tourner autour du joueur)
+            desiredAngle = Math.atan2(toPlayerY, toPlayerX) + Math.PI * 0.4 * en.orbitDir;
+        }
+
+        // Tourner progressivement vers l'angle désiré
+        let angleDiff = desiredAngle - en.angle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        en.angle += angleDiff * 2.5 * dt;
+
+        // Poussée
+        const cosA = Math.cos(en.angle), sinA = Math.sin(en.angle);
+        en.vx += cosA * ENEMY_THRUST * dt;
+        en.vy += sinA * ENEMY_THRUST * dt;
+        en.vx *= ENEMY_DRAG;
+        en.vy *= ENEMY_DRAG;
+
+        // Limiter la vitesse
+        const sp2 = en.vx * en.vx + en.vy * en.vy;
+        if (sp2 > ENEMY_SPEED * ENEMY_SPEED) {
+            const r = ENEMY_SPEED / Math.sqrt(sp2);
+            en.vx *= r;
+            en.vy *= r;
+        }
+
+        en.x += en.vx * dt;
+        en.y += en.vy * dt;
+
+        // Rebond sur les bords
+        const m = 10;
+        if (en.x < m) { en.x = m; en.vx = Math.abs(en.vx); }
+        if (en.x > width - m) { en.x = width - m; en.vx = -Math.abs(en.vx); }
+        if (en.y < m) { en.y = m; en.vy = Math.abs(en.vy); }
+        if (en.y > height - m) { en.y = height - m; en.vy = -Math.abs(en.vy); }
+
+        // --- IA : Tir ---
+        en.shootTimer -= dt;
+        if (en.shootTimer <= 0 && distToPlayer < 500 && distToPlayer > 50) {
+            en.shootTimer = ENEMY_SHOOT_INTERVAL_MIN + xorshift() * (ENEMY_SHOOT_INTERVAL_MAX - ENEMY_SHOOT_INTERVAL_MIN);
+            // Tirer vers le joueur avec une imprécision
+            const aimAngle = Math.atan2(toPlayerY, toPlayerX) + (xorshift() - 0.5) * ENEMY_MISSILE_PRECISION * 2;
+            enemyMissiles.push({
+                x: en.x + Math.cos(aimAngle) * (ENEMY_HALF_W + 5),
+                y: en.y + Math.sin(aimAngle) * (ENEMY_HALF_W + 5),
+                vx: Math.cos(aimAngle) * ENEMY_MISSILE_SPEED + en.vx * 0.2,
+                vy: Math.sin(aimAngle) * ENEMY_MISSILE_SPEED + en.vy * 0.2,
+                owner: en.id
+            });
+        }
+
+        // Collision directe ennemi-joueur (dégâts de contact)
+        if (distToPlayer < (BOAT_HALF_W + ENEMY_HALF_W) * 0.8) {
+            playerHP -= 0.3 * dt * 60; // ~0.3 HP par frame de contact
+            // Repousser les deux
+            const pushX = toPlayerX / (distToPlayer + 1) * 200;
+            const pushY = toPlayerY / (distToPlayer + 1) * 200;
+            en.vx -= pushX * dt;
+            en.vy -= pushY * dt;
+        }
+    }
+
+    // Vérifier mort du joueur
+    if (playerHP <= 0) {
+        playerHP = 0;
+        playerAlive = false;
+        // Explosion du joueur
+        if (boat) {
+            explosions.push({
+                x: boat.x, y: boat.y,
+                age: 0, maxAge: 1.0,
+                strength: 6000,
+                radius: 250
+            });
+            self.postMessage({ type: 'playerDied', x: boat.x, y: boat.y, score: playerScore });
+        }
+    }
+}
+
+function updateEnemyMissiles() {
+    if (!boat) return;
+    const dt = DT / SUBSTEPS;
+
+    for (let i = enemyMissiles.length - 1; i >= 0; i--) {
+        const m = enemyMissiles[i];
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+
+        // Hors écran
+        if (m.x < -60 || m.x > width + 60 || m.y < -60 || m.y > height + 60) {
+            enemyMissiles.splice(i, 1);
+            continue;
+        }
+
+        // Collision avec le joueur
+        if (playerAlive && boat) {
+            const dx = m.x - boat.x, dy = m.y - boat.y;
+            const dist2 = dx * dx + dy * dy;
+            const hitR = BOAT_HALF_W + 5;
+            if (dist2 < hitR * hitR) {
+                playerHP -= 12; // 12 HP de dégâts par missile
+                // Petite explosion
+                explosions.push({
+                    x: m.x, y: m.y,
+                    age: 0, maxAge: 0.3,
+                    strength: 1500,
+                    radius: 80
+                });
+                for (let f = 0; f < 8 && foamCount < MAX_FOAM; f++) {
+                    const angle = xorshift() * Math.PI * 2;
+                    const speed = 100 + xorshift() * 200;
+                    foam_x[foamCount] = m.x;
+                    foam_y[foamCount] = m.y;
+                    foam_vx[foamCount] = Math.cos(angle) * speed;
+                    foam_vy[foamCount] = Math.sin(angle) * speed;
+                    foam_life[foamCount] = 0.3 + xorshift() * 0.3;
+                    foam_size[foamCount] = 0.8 + xorshift() * 0.8;
+                    foamCount++;
+                }
+                self.postMessage({ type: 'playerHit', x: m.x, y: m.y, hp: playerHP });
+                enemyMissiles.splice(i, 1);
+                continue;
+            }
+        }
+    }
+}
+
+function spawnEnemy() {
+    // Spawn sur un bord aléatoire
+    const side = Math.floor(xorshift() * 4);
+    let sx, sy;
+    const margin = 30;
+    if (side === 0) { sx = margin; sy = margin + xorshift() * (height - margin * 2); }        // gauche
+    else if (side === 1) { sx = width - margin; sy = margin + xorshift() * (height - margin * 2); } // droite
+    else if (side === 2) { sx = margin + xorshift() * (width - margin * 2); sy = margin; }     // haut
+    else { sx = margin + xorshift() * (width - margin * 2); sy = height - margin; }             // bas
+
+    const angleToCenter = Math.atan2(height / 2 - sy, width / 2 - sx);
+    enemies.push({
+        id: nextEnemyId++,
+        x: sx, y: sy,
+        vx: 0, vy: 0,
+        angle: angleToCenter,
+        hp: ENEMY_HP,
+        alive: true,
+        shootTimer: 1.5 + xorshift() * 2,
+        orbitDir: xorshift() > 0.5 ? 1 : -1
+    });
 }
 
 // ==========================================
@@ -1594,6 +1905,13 @@ self.onmessage = function(e) {
             explosions = [];
             portals = [];
             rigidBodies = [];
+            boatMissile = null;
+            enemies = [];
+            enemyMissiles = [];
+            enemySpawnTimer = 0;
+            playerHP = 100;
+            playerScore = 0;
+            playerAlive = true;
             if (boat) {
                 boat = null;
                 if (gravityStored != null) {
@@ -1749,15 +2067,48 @@ self.onmessage = function(e) {
                 fx: 0,
                 fy: 0
             };
+            // Réinit le mode combat
+            playerHP = playerMaxHP;
+            playerAlive = true;
+            playerScore = 0;
+            enemies = [];
+            enemyMissiles = [];
+            enemySpawnTimer = 2.0; // Premier ennemi dans 2s
             break;
 
         case 'removeBoat':
             boat = null;
+            boatMissile = null;
+            enemies = [];
+            enemyMissiles = [];
+            playerAlive = true;
+            playerHP = playerMaxHP;
             if (gravityStored != null) {
                 GRAVITY_Y = gravityStored.y;
                 GRAVITY_X = gravityStored.x;
                 gravityStored = null;
             }
+            break;
+
+        case 'fireMissile':
+            if (boat && !boatMissile) {
+                const fSide = msg.side; // 1 = droite, -1 = gauche
+                const fCosA = Math.cos(boat.angle);
+                const fSinA = Math.sin(boat.angle);
+                // Direction perpendiculaire au bateau
+                const perpX = -fSinA * fSide;
+                const perpY = fCosA * fSide;
+                boatMissile = {
+                    x: boat.x + perpX * (BOAT_HALF_H + 4),
+                    y: boat.y + perpY * (BOAT_HALF_H + 4),
+                    vx: perpX * MISSILE_SPEED + boat.vx * 0.3,
+                    vy: perpY * MISSILE_SPEED + boat.vy * 0.3
+                };
+            }
+            break;
+
+        case 'detonateMissile':
+            detonateMissile();
             break;
 
         case 'boatKeys':

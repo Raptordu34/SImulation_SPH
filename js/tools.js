@@ -41,6 +41,22 @@ export class ToolManager {
         this.rigidBodiesData = null;
         this.rigidBodyCount = 0;
         this.boatData = null;
+        this.missileData = null;
+
+        // Enemy / combat state (fed from main.js each frame)
+        this.enemiesData = [];
+        this.enemyMissilesData = [];
+        this.playerHP = 100;
+        this.playerMaxHP = 100;
+        this.playerScore = 0;
+        this.playerAlive = true;
+        this._gameOverShown = false;
+
+        // VFX : explosions visuelles (overlay)
+        this.vfxExplosions = [];  // { x, y, age, maxAge, radius }
+        this.vfxDebris = [];      // { x, y, vx, vy, life, maxLife, size, r, g, b }
+        this.vfxSmoke = [];       // traînée de fumée du missile
+        this._lastMissilePos = null;
 
         // Active tool info element
         this.toolInfoEl = document.getElementById('active-tool-info');
@@ -242,7 +258,25 @@ export class ToolManager {
                 break;
 
             case 'boat':
-                this.worker.postMessage({ type: 'placeBoat', x: pos.x, y: pos.y });
+                if (this.boatData) {
+                    // Bateau déjà placé → logique missile
+                    if (this.missileData) {
+                        // Missile en vol → le faire exploser
+                        this.triggerExplosionVFX(this.missileData.x, this.missileData.y, 180);
+                        this.worker.postMessage({ type: 'detonateMissile' });
+                    } else {
+                        // Pas de missile → en tirer un perpendiculairement
+                        const bx = this.boatData.x, by = this.boatData.y, ba = this.boatData.angle;
+                        const dx = pos.x - bx, dy = pos.y - by;
+                        // Produit vectoriel pour déterminer le côté de la souris
+                        const cross = Math.cos(ba) * dy - Math.sin(ba) * dx;
+                        const side = cross > 0 ? 1 : -1;
+                        this.worker.postMessage({ type: 'fireMissile', side });
+                    }
+                } else {
+                    // Pas encore de bateau → le placer
+                    this.worker.postMessage({ type: 'placeBoat', x: pos.x, y: pos.y });
+                }
                 break;
 
             case 'rigidBody':
@@ -269,6 +303,7 @@ export class ToolManager {
                 break;
 
             case 'explosion':
+                this.triggerExplosionVFX(pos.x, pos.y, 200);
                 this.worker.postMessage({ type: 'explosion', x: pos.x, y: pos.y });
                 break;
 
@@ -436,6 +471,194 @@ export class ToolManager {
     }
 
     // ==========================================
+    // VFX — Explosion visuelle
+    // ==========================================
+    triggerExplosionVFX(x, y, radius) {
+        radius = radius || 180;
+        this.vfxExplosions.push({ x, y, age: 0, maxAge: 0.8, radius });
+
+        // Débris (éclats)
+        for (let i = 0; i < 28; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 120 + Math.random() * 380;
+            const bright = Math.random();
+            this.vfxDebris.push({
+                x, y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                life: 0,
+                maxLife: 0.4 + Math.random() * 0.5,
+                size: 1.5 + Math.random() * 3,
+                r: 255,
+                g: Math.floor(100 + bright * 155),
+                b: Math.floor(bright * 60)
+            });
+        }
+    }
+
+    _updateVFX(dt) {
+        // Explosions
+        for (let i = this.vfxExplosions.length - 1; i >= 0; i--) {
+            this.vfxExplosions[i].age += dt;
+            if (this.vfxExplosions[i].age >= this.vfxExplosions[i].maxAge) {
+                this.vfxExplosions.splice(i, 1);
+            }
+        }
+        // Débris
+        for (let i = this.vfxDebris.length - 1; i >= 0; i--) {
+            const d = this.vfxDebris[i];
+            d.life += dt;
+            d.x += d.vx * dt;
+            d.y += d.vy * dt;
+            d.vx *= 0.96;
+            d.vy *= 0.96;
+            if (d.life >= d.maxLife) {
+                this.vfxDebris.splice(i, 1);
+            }
+        }
+        // Fumée missile
+        for (let i = this.vfxSmoke.length - 1; i >= 0; i--) {
+            const s = this.vfxSmoke[i];
+            s.life += dt;
+            s.x += s.vx * dt;
+            s.y += s.vy * dt;
+            s.size += dt * 12;
+            if (s.life >= s.maxLife) {
+                this.vfxSmoke.splice(i, 1);
+            }
+        }
+        // Ajouter de la fumée derrière le missile
+        if (this.missileData) {
+            const mx = this.missileData.x, my = this.missileData.y;
+            if (this._lastMissilePos) {
+                // Plusieurs puffs entre les deux positions pour un trail continu
+                const puffs = 2;
+                for (let p = 0; p < puffs; p++) {
+                    const t = p / puffs;
+                    this.vfxSmoke.push({
+                        x: this._lastMissilePos.x + (mx - this._lastMissilePos.x) * t + (Math.random() - 0.5) * 3,
+                        y: this._lastMissilePos.y + (my - this._lastMissilePos.y) * t + (Math.random() - 0.5) * 3,
+                        vx: (Math.random() - 0.5) * 20,
+                        vy: (Math.random() - 0.5) * 20,
+                        life: 0,
+                        maxLife: 0.4 + Math.random() * 0.3,
+                        size: 2 + Math.random() * 2
+                    });
+                }
+            }
+            this._lastMissilePos = { x: mx, y: my };
+        } else {
+            this._lastMissilePos = null;
+        }
+    }
+
+    _renderVFX(ctx) {
+        const now = performance.now() / 1000;
+
+        // 1. Fumée du missile (dessinée en premier, derrière le missile)
+        for (const s of this.vfxSmoke) {
+            const t = s.life / s.maxLife;
+            const alpha = (1 - t) * 0.35;
+            ctx.fillStyle = `rgba(180, 180, 190, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // 2. Explosions : flash initial + ondes de choc concentriques
+        for (const exp of this.vfxExplosions) {
+            const t = exp.age / exp.maxAge; // 0→1
+            const r = exp.radius;
+
+            ctx.save();
+
+            // --- Flash blanc initial (très court) ---
+            if (t < 0.15) {
+                const flashT = t / 0.15;
+                const flashAlpha = (1 - flashT) * 0.65;
+                const flashR = r * 0.3 * flashT;
+                const flashGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, flashR + 20);
+                flashGrad.addColorStop(0, `rgba(255, 255, 255, ${flashAlpha})`);
+                flashGrad.addColorStop(0.5, `rgba(255, 240, 180, ${flashAlpha * 0.6})`);
+                flashGrad.addColorStop(1, `rgba(255, 200, 50, 0)`);
+                ctx.fillStyle = flashGrad;
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, flashR + 20, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // --- Boule de feu ---
+            if (t < 0.5) {
+                const fireT = t / 0.5;
+                const fireR = r * 0.4 * fireT;
+                const fireAlpha = (1 - fireT) * 0.5;
+                const fireGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, fireR);
+                fireGrad.addColorStop(0, `rgba(255, 200, 50, ${fireAlpha})`);
+                fireGrad.addColorStop(0.4, `rgba(255, 100, 20, ${fireAlpha * 0.7})`);
+                fireGrad.addColorStop(1, `rgba(180, 30, 0, 0)`);
+                ctx.fillStyle = fireGrad;
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, fireR, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // --- Onde de choc 1 (rapide) ---
+            {
+                const waveT = Math.min(t * 1.8, 1.0);
+                const waveR = r * waveT;
+                const waveAlpha = (1 - waveT) * 0.6;
+                ctx.strokeStyle = `rgba(255, 220, 120, ${waveAlpha})`;
+                ctx.lineWidth = 3 * (1 - waveT) + 0.5;
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, waveR, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // --- Onde de choc 2 (retardée) ---
+            if (t > 0.08) {
+                const waveT2 = Math.min((t - 0.08) * 1.5, 1.0);
+                const waveR2 = r * 0.8 * waveT2;
+                const waveAlpha2 = (1 - waveT2) * 0.35;
+                ctx.strokeStyle = `rgba(255, 160, 60, ${waveAlpha2})`;
+                ctx.lineWidth = 2 * (1 - waveT2) + 0.5;
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, waveR2, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            // --- Fumée résiduelle (apparait tard) ---
+            if (t > 0.3) {
+                const smokeT = (t - 0.3) / 0.7;
+                const smokeAlpha = Math.min(smokeT * 0.8, 0.25) * (1 - smokeT);
+                const smokeR = r * 0.3 + r * 0.3 * smokeT;
+                const smokeGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, smokeR);
+                smokeGrad.addColorStop(0, `rgba(60, 60, 70, ${smokeAlpha})`);
+                smokeGrad.addColorStop(1, `rgba(40, 40, 50, 0)`);
+                ctx.fillStyle = smokeGrad;
+                ctx.beginPath();
+                ctx.arc(exp.x, exp.y, smokeR, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        // 3. Débris (éclats incandescents)
+        for (const d of this.vfxDebris) {
+            const t = d.life / d.maxLife;
+            const alpha = (1 - t);
+            ctx.shadowColor = `rgba(${d.r}, ${d.g}, ${d.b}, ${alpha * 0.6})`;
+            ctx.shadowBlur = 6;
+            ctx.fillStyle = `rgba(${d.r}, ${d.g}, ${d.b}, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(d.x, d.y, d.size * (1 - t * 0.5), 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+    }
+
+    // ==========================================
     // OVERLAY RENDERING
     // ==========================================
     renderOverlay() {
@@ -443,6 +666,10 @@ export class ToolManager {
         const w = this.overlay.width;
         const h = this.overlay.height;
         ctx.clearRect(0, 0, w, h);
+
+        // Mettre à jour et dessiner les VFX (dt estimé ~16ms)
+        this._updateVFX(1 / 60);
+        this._renderVFX(ctx);
 
         // Draw walls
         if (this.walls.length > 0) {
@@ -707,6 +934,314 @@ export class ToolManager {
             ctx.stroke();
             
             ctx.restore();
+        }
+
+        // Missile en vol
+        if (this.missileData) {
+            const mx = this.missileData.x, my = this.missileData.y;
+            const mvx = this.missileData.vx, mvy = this.missileData.vy;
+            const mAngle = Math.atan2(mvy, mvx);
+            const t = performance.now() / 1000;
+
+            ctx.save();
+            ctx.translate(mx, my);
+            ctx.rotate(mAngle);
+
+            // Halo lumineux autour du missile
+            const haloGrad = ctx.createRadialGradient(0, 0, 2, 0, 0, 20);
+            haloGrad.addColorStop(0, 'rgba(255, 150, 50, 0.25)');
+            haloGrad.addColorStop(1, 'rgba(255, 100, 0, 0)');
+            ctx.fillStyle = haloGrad;
+            ctx.beginPath();
+            ctx.arc(0, 0, 20, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Lueur de la traînée
+            ctx.shadowColor = 'rgba(255, 80, 0, 0.8)';
+            ctx.shadowBlur = 16;
+
+            // Corps du missile (métal sombre)
+            ctx.fillStyle = '#1e293b';
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 9, 3.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bande dorée
+            ctx.strokeStyle = 'rgba(255, 200, 80, 0.6)';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.ellipse(2, 0, 2, 3.5, 0, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Ogive (rouge vif)
+            ctx.fillStyle = '#dc2626';
+            ctx.beginPath();
+            ctx.moveTo(9, 0);
+            ctx.quadraticCurveTo(12, -2, 14, 0);
+            ctx.quadraticCurveTo(12, 2, 9, 0);
+            ctx.fill();
+
+            // Ailerons arrière
+            ctx.fillStyle = '#475569';
+            ctx.beginPath();
+            ctx.moveTo(-8, -3);
+            ctx.lineTo(-12, -6);
+            ctx.lineTo(-10, -3);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(-8, 3);
+            ctx.lineTo(-12, 6);
+            ctx.lineTo(-10, 3);
+            ctx.fill();
+
+            // Flamme d'échappement principale (animée)
+            ctx.shadowBlur = 0;
+            const flicker = 0.8 + Math.sin(t * 40) * 0.2;
+            const flameLen = 16 * flicker;
+            const grad = ctx.createLinearGradient(-9, 0, -9 - flameLen, 0);
+            grad.addColorStop(0, 'rgba(255, 255, 200, 0.9)');
+            grad.addColorStop(0.3, 'rgba(255, 180, 50, 0.8)');
+            grad.addColorStop(0.7, 'rgba(255, 80, 0, 0.4)');
+            grad.addColorStop(1, 'rgba(200, 30, 0, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.moveTo(-9, -2.5);
+            ctx.quadraticCurveTo(-9 - flameLen * 0.6, -4 * flicker, -9 - flameLen, 0);
+            ctx.quadraticCurveTo(-9 - flameLen * 0.6, 4 * flicker, -9, 2.5);
+            ctx.fill();
+
+            // Flamme intérieure (coeur blanc)
+            ctx.fillStyle = 'rgba(255, 255, 230, 0.6)';
+            ctx.beginPath();
+            ctx.moveTo(-9, -1.2);
+            ctx.quadraticCurveTo(-9 - flameLen * 0.3, -1.5, -9 - flameLen * 0.5, 0);
+            ctx.quadraticCurveTo(-9 - flameLen * 0.3, 1.5, -9, 1.2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        // ==========================================
+        // ENEMY BOATS
+        // ==========================================
+        if (this.enemiesData && this.enemiesData.length > 0) {
+            for (const en of this.enemiesData) {
+                if (!en.alive) continue;
+                const ex = en.x, ey = en.y, ea = en.angle;
+                const eLen = 16, eWid = 10;
+
+                ctx.save();
+                ctx.translate(ex, ey);
+                ctx.rotate(ea);
+
+                // Shadow
+                ctx.shadowColor = 'rgba(0,0,0,0.3)';
+                ctx.shadowBlur = 6;
+                ctx.shadowOffsetY = 2;
+
+                // Hull - dark red
+                ctx.fillStyle = '#1e1e1e';
+                ctx.strokeStyle = '#dc2626';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(eLen, 0);
+                ctx.bezierCurveTo(eLen * 0.5, eWid * 1.1, -eLen * 0.8, eWid, -eLen, eWid * 0.8);
+                ctx.lineTo(-eLen, -eWid * 0.8);
+                ctx.bezierCurveTo(-eLen * 0.8, -eWid, eLen * 0.5, -eWid * 1.1, eLen, 0);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.shadowColor = 'transparent';
+
+                // Danger stripe
+                ctx.strokeStyle = 'rgba(255,60,60,0.7)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(eLen * 0.6, 0);
+                ctx.lineTo(-eLen * 0.5, 0);
+                ctx.stroke();
+
+                // Windshield
+                ctx.fillStyle = 'rgba(220,40,40,0.6)';
+                ctx.beginPath();
+                ctx.moveTo(eLen * 0.15, 0);
+                ctx.quadraticCurveTo(0, eWid * 0.65, -eLen * 0.15, eWid * 0.5);
+                ctx.lineTo(-eLen * 0.15, -eWid * 0.5);
+                ctx.quadraticCurveTo(0, -eWid * 0.65, eLen * 0.15, 0);
+                ctx.fill();
+
+                // Engine block
+                ctx.fillStyle = '#991b1b';
+                ctx.beginPath();
+                ctx.roundRect(-eLen - 4, -3.5, 7, 7, 1.5);
+                ctx.fill();
+
+                ctx.restore();
+
+                // HP bar above enemy
+                const hpFrac = en.hp / 3;
+                const barW = 24, barH = 3;
+                const barX = ex - barW / 2, barY = ey - eWid - 10;
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2);
+                ctx.fillStyle = hpFrac > 0.5 ? '#22c55e' : hpFrac > 0.25 ? '#eab308' : '#ef4444';
+                ctx.fillRect(barX, barY, barW * hpFrac, barH);
+            }
+        }
+
+        // ==========================================
+        // ENEMY MISSILES
+        // ==========================================
+        if (this.enemyMissilesData && this.enemyMissilesData.length > 0) {
+            for (const em of this.enemyMissilesData) {
+                const emAngle = Math.atan2(em.vy, em.vx);
+                ctx.save();
+                ctx.translate(em.x, em.y);
+                ctx.rotate(emAngle);
+
+                // Red glow
+                const eGrad = ctx.createRadialGradient(0, 0, 1, 0, 0, 12);
+                eGrad.addColorStop(0, 'rgba(255,60,60,0.3)');
+                eGrad.addColorStop(1, 'rgba(255,0,0,0)');
+                ctx.fillStyle = eGrad;
+                ctx.beginPath();
+                ctx.arc(0, 0, 12, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Body
+                ctx.fillStyle = '#7f1d1d';
+                ctx.beginPath();
+                ctx.ellipse(0, 0, 6, 2.5, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Tip
+                ctx.fillStyle = '#fbbf24';
+                ctx.beginPath();
+                ctx.moveTo(6, 0);
+                ctx.quadraticCurveTo(9, -1.5, 10, 0);
+                ctx.quadraticCurveTo(9, 1.5, 6, 0);
+                ctx.fill();
+
+                // Flame
+                const fl = 0.8 + Math.sin(performance.now() / 25) * 0.2;
+                const fLen = 8 * fl;
+                const fGrad = ctx.createLinearGradient(-6, 0, -6 - fLen, 0);
+                fGrad.addColorStop(0, 'rgba(255,200,100,0.8)');
+                fGrad.addColorStop(0.5, 'rgba(255,80,20,0.5)');
+                fGrad.addColorStop(1, 'rgba(200,20,0,0)');
+                ctx.fillStyle = fGrad;
+                ctx.beginPath();
+                ctx.moveTo(-6, -1.8);
+                ctx.quadraticCurveTo(-6 - fLen * 0.6, -2.5 * fl, -6 - fLen, 0);
+                ctx.quadraticCurveTo(-6 - fLen * 0.6, 2.5 * fl, -6, 1.8);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        // ==========================================
+        // HUD: HP BAR + SCORE (only when boat active)
+        // ==========================================
+        if (this.boatData) {
+            const hudY = h - 40;
+            const hpBarW = 200, hpBarH = 14;
+            const hpBarX = (w - hpBarW) / 2;
+            const hpFrac = Math.max(0, this.playerHP / this.playerMaxHP);
+
+            // Background
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.beginPath();
+            ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
+            ctx.fill();
+
+            // Border
+            ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
+            ctx.stroke();
+
+            // HP fill
+            const hpGrad = ctx.createLinearGradient(hpBarX, hudY, hpBarX + hpBarW * hpFrac, hudY);
+            if (hpFrac > 0.5) {
+                hpGrad.addColorStop(0, '#22c55e');
+                hpGrad.addColorStop(1, '#16a34a');
+            } else if (hpFrac > 0.25) {
+                hpGrad.addColorStop(0, '#eab308');
+                hpGrad.addColorStop(1, '#ca8a04');
+            } else {
+                hpGrad.addColorStop(0, '#ef4444');
+                hpGrad.addColorStop(1, '#dc2626');
+            }
+            if (hpFrac > 0) {
+                ctx.fillStyle = hpGrad;
+                ctx.beginPath();
+                ctx.roundRect(hpBarX, hudY, hpBarW * hpFrac, hpBarH, 3);
+                ctx.fill();
+            }
+
+            // HP text
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 10px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${Math.ceil(this.playerHP)} / ${this.playerMaxHP}`, w / 2, hudY + hpBarH / 2);
+
+            // HP label
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.font = '9px system-ui, sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText('HP', hpBarX - 8, hudY + hpBarH / 2);
+
+            // ---- Score (top-right) ----
+            const scoreStr = `SCORE  ${this.playerScore}`;
+            ctx.font = 'bold 16px system-ui, sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'top';
+
+            // Score background pill
+            const scoreW = ctx.measureText(scoreStr).width + 20;
+            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            ctx.beginPath();
+            ctx.roundRect(w - scoreW - 16, 12, scoreW + 8, 28, 8);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            ctx.fillStyle = '#fbbf24';
+            ctx.fillText(scoreStr, w - 16, 17);
+        }
+
+        // ==========================================
+        // GAME OVER OVERLAY
+        // ==========================================
+        if (this.boatData && !this.playerAlive) {
+            ctx.fillStyle = 'rgba(0,0,0,0.55)';
+            ctx.fillRect(0, 0, w, h);
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            // GAME OVER title
+            ctx.font = 'bold 48px system-ui, sans-serif';
+            ctx.fillStyle = '#ef4444';
+            ctx.shadowColor = 'rgba(239,68,68,0.6)';
+            ctx.shadowBlur = 20;
+            ctx.fillText('GAME OVER', w / 2, h / 2 - 30);
+            ctx.shadowBlur = 0;
+
+            // Score
+            ctx.font = 'bold 22px system-ui, sans-serif';
+            ctx.fillStyle = '#fbbf24';
+            ctx.fillText(`Score final : ${this.playerScore}`, w / 2, h / 2 + 20);
+
+            // Hint
+            ctx.font = '14px system-ui, sans-serif';
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.fillText('Cliquez sur Reset pour recommencer', w / 2, h / 2 + 55);
         }
 
         // Draw tool cursor when mouse is over canvas
@@ -1047,6 +1582,18 @@ export class ToolManager {
         this.rigidBodies = [];
         this.pendingPortal = null;
         this.boatData = null;
+        this.missileData = null;
+        this.enemiesData = [];
+        this.enemyMissilesData = [];
+        this.playerHP = 100;
+        this.playerMaxHP = 100;
+        this.playerScore = 0;
+        this.playerAlive = true;
+        this._gameOverShown = false;
+        this.vfxExplosions = [];
+        this.vfxDebris = [];
+        this.vfxSmoke = [];
+        this._lastMissilePos = null;
         this.worker.postMessage({ type: 'clearPortals' });
         this.worker.postMessage({ type: 'clearRigidBodies' });
         this.worker.postMessage({ type: 'removeBoat' });
