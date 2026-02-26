@@ -78,6 +78,33 @@ void main() {
 }
 `;
 
+// ---- MRT combined density+thickness fragment shader ----
+export const densityThicknessMRTFragmentShader = `#version 300 es
+precision mediump float;
+
+in vec2 v_uv;
+in float v_density;
+in float v_speed;
+
+uniform vec3 u_waterColor;
+
+layout(location = 0) out vec4 densityOut;
+layout(location = 1) out vec4 thicknessOut;
+
+void main() {
+    float dist = length(v_uv);
+    if (dist > 1.0) discard;
+
+    // Density: soft gaussian falloff
+    float densityAlpha = exp(-dist * dist * 3.0);
+    densityOut = vec4(u_waterColor * densityAlpha, densityAlpha);
+
+    // Thickness: slightly wider falloff
+    float thickAlpha = exp(-dist * dist * 2.5);
+    thicknessOut = vec4(thickAlpha, thickAlpha, thickAlpha, thickAlpha);
+}
+`;
+
 // ---- Full-screen quad vertex shader ----
 export const fullscreenVertexShader = `#version 300 es
 precision highp float;
@@ -93,7 +120,7 @@ void main() {
 
 // ---- Surface extraction: threshold + normals ----
 export const surfaceFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 
@@ -131,15 +158,15 @@ void main() {
 }
 `;
 
-// ---- Final composition shader ----
+// ---- Final composition shader (optimized) ----
 export const compositeFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 
 uniform sampler2D u_surfaceTex;    // normal.xy, thickness, mask
 uniform sampler2D u_thicknessTex;  // accumulated thickness
-uniform sampler2D u_backgroundTex; // (Désactivé) Ancien fond de grille
+uniform sampler2D u_backgroundTex; // unused
 uniform sampler2D u_densityTex;    // raw density for color
 uniform sampler2D u_shadowTex;     // shadow map
 
@@ -159,54 +186,22 @@ uniform int u_shadowEnabled;
 
 out vec4 fragColor;
 
-// Simplex noise for caustics
-vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec3 permute(vec3 x) { return mod289(((x * 34.0) + 1.0) * x); }
-
-float snoise(vec2 v) {
-    const vec4 C = vec4(0.211324865405187, 0.366025403784439,
-                       -0.577350269189626, 0.024390243902439);
-    vec2 i  = floor(v + dot(v, C.yy));
-    vec2 x0 = v - i + dot(i, C.xx);
-    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-    vec4 x12 = x0.xyxy + C.xxzz;
-    x12.xy -= i1;
-    i = mod289(i);
-    vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
-    vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-    m = m * m;
-    m = m * m;
-    vec3 x = 2.0 * fract(p * C.www) - 1.0;
-    vec3 h = abs(x) - 0.5;
-    vec3 ox = floor(x + 0.5);
-    vec3 a0 = x - ox;
-    m *= 1.79284291400159 - 0.85373472095314 * (a0*a0 + h*h);
-    vec3 g;
-    g.x = a0.x * x0.x + h.x * x0.y;
-    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-    return 130.0 * dot(m, g);
-}
-
+// Fast caustics using cheap sin-based pattern (replaces 3-octave simplex noise)
 float caustics(vec2 uv, float time) {
-    float c1 = snoise(uv * 8.0 + vec2(time * 0.3, time * 0.2));
-    float c2 = snoise(uv * 12.0 - vec2(time * 0.2, time * 0.35));
-    float c3 = snoise(uv * 16.0 + vec2(time * 0.15, -time * 0.25));
-    float c = (c1 + c2 + c3) / 3.0;
-    return pow(max(c, 0.0), 2.0);
+    vec2 p1 = uv * 8.0 + vec2(time * 0.3, time * 0.2);
+    vec2 p2 = uv * 12.0 - vec2(time * 0.2, time * 0.35);
+    float c = sin(p1.x) * sin(p1.y) + sin(p2.x) * sin(p2.y);
+    c = c * 0.25 + 0.5;
+    return c * c;
 }
 
 void main() {
     vec4 surface = texture(u_surfaceTex, v_uv);
     float mask = surface.a;
 
-    // --- MAGIE ICI : Création de la couleur des abysses ---
-    // On prend la couleur de profondeur (deepColor) et on la rend encore plus sombre
     vec3 abyssColor = u_deepColor * 0.25; 
 
     if (mask < 0.01) {
-        // Le sillage du bateau a creusé l'eau, il n'y a plus de particules en surface.
-        // Au lieu d'afficher la grille, on affiche les profondeurs de l'océan.
         vec4 bg = vec4(abyssColor, 1.0);
 
         if (u_shadowEnabled == 1) {
@@ -215,7 +210,6 @@ void main() {
         }
 
         if (u_causticsEnabled == 1) {
-            // On laisse de légères caustiques animées dans le fond pour simuler la lumière qui pénètre
             float c = caustics(v_uv, u_time) * 0.15;
             bg.rgb += vec3(0.2, 0.4, 0.6) * c;
         }
@@ -228,60 +222,47 @@ void main() {
     vec2 normal = surface.xy * 2.0 - 1.0;
     float thickness = texture(u_thicknessTex, v_uv).r;
 
-    // === REFRACTION SUR L'ABYSSE ===
-    // La lumière qui traverse les particules réfracte maintenant l'eau profonde, plus la grille
+    // === REFRACTION ===
     vec3 background = abyssColor;
 
     if (u_shadowEnabled == 1) {
-        vec2 refractedUV = v_uv + normal * u_refractionStrength * thickness * 0.02;
-        refractedUV = clamp(refractedUV, 0.0, 1.0);
+        vec2 refractedUV = clamp(v_uv + normal * u_refractionStrength * thickness * 0.02, 0.0, 1.0);
         float shadow = texture(u_shadowTex, refractedUV).r;
         background *= mix(1.0, 0.4, shadow);
     }
 
     // === BEER-LAMBERT ABSORPTION ===
-    vec3 absorption = vec3(0.8, 0.3, 0.15); 
-    vec3 transmittance = exp(-absorption * thickness * 1.5);
+    vec3 transmittance = exp(vec3(-1.2, -0.45, -0.225) * thickness);
     vec3 waterCol = mix(u_deepColor, u_waterColor, transmittance);
 
-    // === FUSION DOUCE SURFACE / FOND ===
-    // Quand l'eau devient très fine (bords du sillage), elle devient transparente
-    // et se fond parfaitement avec la couleur abyssale
+    // === BLEND SURFACE / BACKGROUND ===
     float opacity = 1.0 - exp(-thickness * 2.5);
     vec3 color = mix(background, waterCol, opacity * 0.95);
 
     // === SPECULAR (Blinn-Phong) ===
     vec3 N = normalize(vec3(normal, 1.0));
-    vec3 L = normalize(u_lightDir);
     vec3 V = vec3(0.0, 0.0, 1.0); 
-    vec3 halfVec = normalize(L + V);
+    vec3 halfVec = normalize(u_lightDir + V);
     float spec = pow(max(dot(N, halfVec), 0.0), u_specularPower);
-    color += vec3(1.0) * spec * u_specularIntensity;
+    color += spec * u_specularIntensity;
 
-    // === ENVIRONMENT REFLECTION ===
+    // === FRESNEL + ENV REFLECTION (combined) ===
+    float NdotV = max(dot(vec3(normal, 0.5), V), 0.0);
+    float fresnel = pow(1.0 - NdotV, u_fresnelPower);
+    color += vec3(0.6, 0.8, 1.0) * fresnel * 0.3;
     if (u_envReflectionStrength > 0.001) {
-        vec3 R = reflect(-V, N);
-        float envY = R.y * 0.5 + 0.5;
-        vec3 skyColor = mix(vec3(0.12, 0.15, 0.25), vec3(0.5, 0.7, 1.0), envY);
-        float horizonGlow = exp(-abs(R.y) * 4.0);
-        skyColor += vec3(0.4, 0.5, 0.6) * horizonGlow * 0.3;
-        float fresnel = pow(1.0 - max(dot(vec3(normal, 0.5), V), 0.0), u_fresnelPower);
+        vec3 skyColor = mix(vec3(0.12, 0.15, 0.25), vec3(0.5, 0.7, 1.0), N.y * 0.5 + 0.5);
         color += skyColor * fresnel * u_envReflectionStrength;
     }
 
-    // === FRESNEL RIM ===
-    float fresnel = pow(1.0 - max(dot(vec3(normal, 0.5), V), 0.0), u_fresnelPower);
-    color += vec3(0.6, 0.8, 1.0) * fresnel * 0.3;
-
-    // === CAUSTICS (inside fluid) ===
+    // === CAUSTICS ===
     if (u_causticsEnabled == 1) {
         float c = caustics(v_uv, u_time);
         color += vec3(0.4, 0.6, 0.8) * c * 0.15 * transmittance;
     }
 
     // === AMBIENT OCCLUSION ===
-    float ao = smoothstep(0.1, 0.6, thickness);
-    color *= mix(0.7, 1.0, ao);
+    color *= mix(0.7, 1.0, smoothstep(0.1, 0.6, thickness));
 
     fragColor = vec4(color, mask);
 }
@@ -289,7 +270,7 @@ void main() {
 
 // ---- Background grid shader ----
 export const backgroundFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 
@@ -320,7 +301,7 @@ void main() {
 
 // ---- Foam vertex shader (with size variation) ----
 export const foamVertexShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 a_position;
 in vec2 a_offset;
@@ -350,7 +331,7 @@ void main() {
 
 // ---- Foam fragment shader (with type variation) ----
 export const foamFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 in float v_life;
@@ -467,7 +448,7 @@ void main() {
 
 // ---- Shadow fragment shader ----
 export const shadowFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 
@@ -485,7 +466,7 @@ void main() {
 
 // ---- Shadow blur shader ----
 export const shadowBlurFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 uniform sampler2D u_tex;
@@ -506,7 +487,7 @@ void main() {
 
 // ---- Bloom extract shader ----
 export const bloomExtractFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 uniform sampler2D u_sceneTex;
@@ -526,7 +507,7 @@ void main() {
 
 // ---- Bloom blur shader ----
 export const bloomBlurFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 uniform sampler2D u_tex;
@@ -547,7 +528,7 @@ void main() {
 
 // ---- Bloom composite shader ----
 export const bloomCompositeFragmentShader = `#version 300 es
-precision highp float;
+precision mediump float;
 
 in vec2 v_uv;
 uniform sampler2D u_sceneTex;

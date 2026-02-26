@@ -3,6 +3,7 @@
 // ==========================================
 import {
     particleVertexShader, densityFragmentShader, thicknessFragmentShader,
+    densityThicknessMRTFragmentShader,
     fullscreenVertexShader, surfaceFragmentShader, compositeFragmentShader,
     backgroundFragmentShader, foamVertexShader, foamFragmentShader,
     debugVertexShader, debugFragmentShader,
@@ -17,7 +18,8 @@ export class Renderer {
             alpha: true,
             antialias: false,
             premultipliedAlpha: false,
-            preserveDrawingBuffer: true // for screenshots/recording
+            preserveDrawingBuffer: true, // for screenshots/recording
+            powerPreference: 'high-performance'
         });
 
         if (!this.gl) {
@@ -28,6 +30,9 @@ export class Renderer {
 
         this.width = canvas.width;
         this.height = canvas.height;
+        this.renderScale = 0.5;
+        this.scaledWidth = Math.max(1, Math.floor(this.width * this.renderScale));
+        this.scaledHeight = Math.max(1, Math.floor(this.height * this.renderScale));
         this.time = 0;
 
         // Render settings
@@ -118,9 +123,15 @@ export class Renderer {
             ['a_position', 'a_offset', 'a_density', 'a_velocity']
         );
 
-        // Thickness pass
+        // Thickness pass (kept for fallback)
         this.thicknessShader = this._createProgram(
             particleVertexShader, thicknessFragmentShader,
+            ['a_position', 'a_offset', 'a_density', 'a_velocity']
+        );
+
+        // MRT combined density+thickness pass
+        this.mrtShader = this._createProgram(
+            particleVertexShader, densityThicknessMRTFragmentShader,
             ['a_position', 'a_offset', 'a_density', 'a_velocity']
         );
 
@@ -237,6 +248,7 @@ export class Renderer {
         // VAO for particle rendering
         this.particleVAO = this._createParticleVAO(this.densityShader.program);
         this.thicknessVAO = this._createParticleVAO(this.thicknessShader.program);
+        this.mrtVAO = this._createParticleVAO(this.mrtShader.program);
         this.debugVAO = this._createDebugVAO();
         this.shadowVAO = this._createShadowVAO();
 
@@ -382,31 +394,62 @@ export class Renderer {
         return { fbo, texture: tex };
     }
 
+    _createMRTFBO(w, h) {
+        const gl = this.gl;
+
+        const densityTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, densityTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const thicknessTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, thicknessTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, densityTex, 0);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, thicknessTex, 0);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        return { fbo, densityTexture: densityTex, thicknessTexture: thicknessTex };
+    }
+
     _initFramebuffers() {
         const gl = this.gl;
         const w = this.width;
         const h = this.height;
+        const sw = this.scaledWidth;
+        const sh = this.scaledHeight;
 
-        // Density field FBO (RGBA16F for precision)
-        this.densityFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+        // MRT density+thickness FBO at half resolution
+        this.mrtFBO = this._createMRTFBO(sw, sh);
+        // Backward-compatible references for composite pass
+        this.densityFBO = { texture: this.mrtFBO.densityTexture };
+        this.thicknessFBO = { texture: this.mrtFBO.thicknessTexture };
 
-        // Surface normals + mask FBO
-        this.surfaceFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+        // Surface normals + mask FBO at half resolution
+        this.surfaceFBO = this._createFBO(sw, sh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
 
-        // Thickness FBO
-        this.thicknessFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
-
-        // Background FBO
+        // Background FBO at full resolution
         this.backgroundFBO = this._createFBO(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
 
-        // Shadow FBOs (ping-pong for blur)
-        this.shadowFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
-        this.shadowBlurFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+        // Shadow FBOs at half resolution (ping-pong for blur)
+        this.shadowFBO = this._createFBO(sw, sh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+        this.shadowBlurFBO = this._createFBO(sw, sh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
 
-        // Composite FBO (for bloom extract input)
+        // Composite FBO (for bloom extract input) at full resolution
         this.compositeFBO = this._createFBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
 
-        // Bloom FBOs (half resolution for performance)
+        // Bloom FBOs (quarter resolution)
         const bw = Math.max(1, w >> 1);
         const bh = Math.max(1, h >> 1);
         this.bloomExtractFBO = this._createFBO(bw, bh, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
@@ -442,6 +485,8 @@ export class Renderer {
     resize(w, h) {
         this.width = w;
         this.height = h;
+        this.scaledWidth = Math.max(1, Math.floor(w * this.renderScale));
+        this.scaledHeight = Math.max(1, Math.floor(h * this.renderScale));
         this.canvas.width = w;
         this.canvas.height = h;
 
@@ -453,8 +498,14 @@ export class Renderer {
 
     _deleteFBOs() {
         const gl = this.gl;
+        // Delete MRT FBO
+        if (this.mrtFBO) {
+            gl.deleteFramebuffer(this.mrtFBO.fbo);
+            gl.deleteTexture(this.mrtFBO.densityTexture);
+            gl.deleteTexture(this.mrtFBO.thicknessTexture);
+        }
         const fbos = [
-            this.densityFBO, this.surfaceFBO, this.thicknessFBO,
+            this.surfaceFBO,
             this.backgroundFBO, this.shadowFBO, this.shadowBlurFBO,
             this.compositeFBO, this.bloomExtractFBO, this.bloomBlurFBO
         ];
@@ -527,11 +578,8 @@ export class Renderer {
             this._renderShadowMap();
         }
 
-        // Pass 2: Density field
-        this._renderDensityField();
-
-        // Pass 3: Thickness
-        this._renderThickness();
+        // Pass 2+3: Combined density+thickness (MRT, half-res)
+        this._renderDensityThicknessMRT();
 
         // Pass 4: Surface extraction
         this._renderSurface();
@@ -556,10 +604,12 @@ export class Renderer {
     _renderShadowMap() {
         const gl = this.gl;
         const shader = this.shadowShader;
+        const sw = this.scaledWidth;
+        const sh = this.scaledHeight;
 
-        // Render shadow splats
+        // Render shadow splats at half resolution
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFBO.fbo);
-        gl.viewport(0, 0, this.width, this.height);
+        gl.viewport(0, 0, sw, sh);
         gl.clearColor(0, 0, 0, 1);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -585,20 +635,22 @@ export class Renderer {
 
         gl.disable(gl.BLEND);
 
-        // Blur shadow (2 passes)
+        // Blur shadow (2 passes) at half resolution
         const softness = this.settings.shadowSoftness;
         this._blurPass(this.shadowFBO, this.shadowBlurFBO,
-            this.shadowBlurShader, softness / this.width, 0);
+            this.shadowBlurShader, softness / sw, 0, sw, sh);
         this._blurPass(this.shadowBlurFBO, this.shadowFBO,
-            this.shadowBlurShader, 0, softness / this.height);
+            this.shadowBlurShader, 0, softness / sh, sw, sh);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
-    _blurPass(srcFBO, dstFBO, shader, dirX, dirY) {
+    _blurPass(srcFBO, dstFBO, shader, dirX, dirY, w, h) {
         const gl = this.gl;
+        w = w || this.width;
+        h = h || this.height;
         gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO.fbo);
-        gl.viewport(0, 0, this.width, this.height);
+        gl.viewport(0, 0, w, h);
 
         gl.useProgram(shader.program);
         gl.activeTexture(gl.TEXTURE0);
@@ -611,6 +663,35 @@ export class Renderer {
         gl.bindVertexArray(null);
     }
 
+    // ---- Optimized MRT combined density+thickness pass ----
+    _renderDensityThicknessMRT() {
+        const gl = this.gl;
+        const shader = this.mrtShader;
+        const sw = this.scaledWidth;
+        const sh = this.scaledHeight;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.mrtFBO.fbo);
+        gl.viewport(0, 0, sw, sh);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(shader.program);
+        gl.uniform2f(shader.uniforms.u_resolution, this.width, this.height);
+        gl.uniform1f(shader.uniforms.u_particleSize, this.settings.particleSize);
+        gl.uniform3fv(shader.uniforms.u_waterColor, this.settings.waterColor);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+
+        gl.bindVertexArray(this.mrtVAO);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.particleCount);
+        gl.bindVertexArray(null);
+
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // ---- Legacy density pass (kept for fallback) ----
     _renderDensityField() {
         const gl = this.gl;
         const shader = this.densityShader;
@@ -664,9 +745,11 @@ export class Renderer {
     _renderSurface() {
         const gl = this.gl;
         const shader = this.surfaceShader;
+        const sw = this.scaledWidth;
+        const sh = this.scaledHeight;
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.surfaceFBO.fbo);
-        gl.viewport(0, 0, this.width, this.height);
+        gl.viewport(0, 0, sw, sh);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -676,7 +759,7 @@ export class Renderer {
         gl.bindTexture(gl.TEXTURE_2D, this.densityFBO.texture);
         gl.uniform1i(shader.uniforms.u_densityTex, 0);
 
-        gl.uniform2f(shader.uniforms.u_texelSize, 1.0 / this.width, 1.0 / this.height);
+        gl.uniform2f(shader.uniforms.u_texelSize, 1.0 / sw, 1.0 / sh);
         gl.uniform1f(shader.uniforms.u_threshold, this.settings.threshold);
 
         gl.bindVertexArray(this.fsVAO);

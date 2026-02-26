@@ -9,8 +9,8 @@ const H = 35;
 const H2 = H * H;
 const PARTICLE_RADIUS = 9;
 const REST_DENS = 3.0;
-const DT = 0.014;
-const SUBSTEPS = 3;
+const DT = 0.016;
+const SUBSTEPS = 2;
 const WALL_STIFFNESS = 5000;
 const MOUSE_RADIUS = 45;
 
@@ -180,6 +180,34 @@ let playerHP = 100;
 let playerMaxHP = 100;
 let playerScore = 0;
 let playerAlive = true;
+
+// ==========================================
+// VAMPIRE SURVIVOR — AUTO-FIRE & LEVELING
+// ==========================================
+let playerLevel = 1;
+let playerXP = 0;
+let playerXPToNext = 50;
+let gamePaused = false;
+let gameTime = 0; // temps total de jeu en secondes
+
+// Auto-fire stats (upgradeable)
+let autoFireInterval = 1.0;
+let bulletDamage = 1;
+let bulletSpeed = 500;
+let bulletSize = 4;
+let bulletCount = 1;
+let bulletPiercing = 0;
+let hpRegen = 0;
+let autoFireTimer = 0;
+
+const upgradeLevels = {
+    fireRate: 0, damage: 0, bulletSpeed: 0, multishot: 0,
+    piercing: 0, maxHP: 0, regen: 0, bulletSize: 0
+};
+
+let playerBullets = [];
+const MAX_PLAYER_BULLETS = 200;
+const transferBullets = new Float32Array(MAX_PLAYER_BULLETS * 5);
 
 // Local gravity active state
 let localGravityActive = false;
@@ -709,7 +737,7 @@ function applyRigidBodyForces() {
         }
     }
 
-    // Buoyancy: count nearby particles
+    // Buoyancy: use spatial grid instead of brute-force
     for (let b = 0; b < rigidBodies.length; b++) {
         const body = rigidBodies[b];
         let bRadius;
@@ -722,10 +750,26 @@ function applyRigidBodyForces() {
         }
         const checkR = bRadius + H;
         const checkR2 = checkR * checkR;
+
+        // Use grid to find nearby particles
+        const bCx = Math.max(0, Math.min(cols - 1, (body.x / H) | 0));
+        const bCy = Math.max(0, Math.min(rows - 1, (body.y / H) | 0));
+        const gridRadius = Math.ceil(checkR / H);
+        const cxMin = Math.max(0, bCx - gridRadius);
+        const cxMax = Math.min(cols - 1, bCx + gridRadius);
+        const cyMin = Math.max(0, bCy - gridRadius);
+        const cyMax = Math.min(rows - 1, bCy + gridRadius);
+
         let submerged = 0;
-        for (let i = 0; i < particleCount; i++) {
-            const ddx = p_x[i] - body.x, ddy = p_y[i] - body.y;
-            if (ddx * ddx + ddy * ddy < checkR2) submerged++;
+        for (let cy = cyMin; cy <= cyMax; cy++) {
+            for (let cx = cxMin; cx <= cxMax; cx++) {
+                let j = cellHead[cx + cy * cols];
+                while (j !== -1) {
+                    const ddx = p_x[j] - body.x, ddy = p_y[j] - body.y;
+                    if (ddx * ddx + ddy * ddy < checkR2) submerged++;
+                    j = particleNext[j];
+                }
+            }
         }
         body.fy -= submerged * 0.8 * GRAVITY_Y * (body.mass / 60.0);
     }
@@ -1401,9 +1445,8 @@ function step() {
     integrate();
     integrateRigidBodies();
     integrateBoat();
-    integrateMissile();
+    integratePlayerBullets();
     updateEnemies();
-    updateEnemyMissiles();
     updateFoam();
     processEmitters(DT);
 }
@@ -1416,8 +1459,17 @@ let running = true;
 function simLoop() {
     if (!running) return;
 
-    for (let i = 0; i < SUBSTEPS; i++) {
-        step();
+    if (!gamePaused) {
+        for (let i = 0; i < SUBSTEPS; i++) {
+            step();
+        }
+        // Per-frame logic
+        autoFire();
+        gameTime += DT;
+        // HP regen
+        if (boat && playerAlive && hpRegen > 0) {
+            playerHP = Math.min(playerHP + hpRegen * DT, playerMaxHP);
+        }
     }
 
     // Sim FPS tracking
@@ -1467,6 +1519,16 @@ function simLoop() {
         transferRigidBodies[off + 15] = body.colorB;
     }
 
+    // Fill player bullets transfer buffer
+    for (let i = 0; i < playerBullets.length; i++) {
+        const b = playerBullets[i];
+        transferBullets[i * 5] = b.x;
+        transferBullets[i * 5 + 1] = b.y;
+        transferBullets[i * 5 + 2] = b.vx;
+        transferBullets[i * 5 + 3] = b.vy;
+        transferBullets[i * 5 + 4] = b.size;
+    }
+
     self.postMessage({
         type: 'frame',
         positions: transferPos.subarray(0, particleCount * 2),
@@ -1483,16 +1545,21 @@ function simLoop() {
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
         rigidBodyCount: rbCount,
         boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null,
-        missile: boatMissile ? { x: boatMissile.x, y: boatMissile.y, vx: boatMissile.vx, vy: boatMissile.vy } : null,
-        enemies: enemies.map(e => ({ id: e.id, x: e.x, y: e.y, angle: e.angle, hp: e.hp, alive: e.alive })),
-        enemyMissiles: enemyMissiles.map(m => ({ x: m.x, y: m.y, vx: m.vx, vy: m.vy })),
+        enemies: enemies.map(e => ({ id: e.id, x: e.x, y: e.y, angle: e.angle, hp: e.hp, maxHP: e.maxHP || ENEMY_HP, alive: e.alive })),
+        playerBullets: transferBullets.subarray(0, playerBullets.length * 5),
+        playerBulletCount: playerBullets.length,
         playerHP,
         playerMaxHP,
         playerScore,
-        playerAlive
+        playerAlive,
+        playerLevel,
+        playerXP,
+        playerXPToNext,
+        gamePaused,
+        gameTime
     });
 
-    setTimeout(simLoop, 4);
+    setTimeout(simLoop, 8);
 }
 
 // ==========================================
@@ -1581,6 +1648,8 @@ function destroyEnemy(index) {
     // Notifier le main thread de l'explosion
     self.postMessage({ type: 'enemyDestroyed', x: en.x, y: en.y, id: en.id });
     playerScore += 100;
+    playerXP += 25 + playerLevel * 5;
+    checkLevelUp();
     enemies.splice(index, 1);
 }
 
@@ -1591,9 +1660,11 @@ function updateEnemies() {
     if (!boat || !playerAlive) return;
     const dt = DT / SUBSTEPS;
 
-    // Spawn timer
+    // Spawn timer — scales with level & time
+    const spawnInterval = Math.max(0.6, ENEMY_SPAWN_INTERVAL - playerLevel * 0.25 - gameTime * 0.005);
+    const maxEnemies = MAX_ENEMIES + playerLevel * 2 + Math.floor(gameTime / 30);
     enemySpawnTimer += dt;
-    if (enemySpawnTimer >= ENEMY_SPAWN_INTERVAL && enemies.length < MAX_ENEMIES) {
+    if (enemySpawnTimer >= spawnInterval && enemies.length < maxEnemies) {
         enemySpawnTimer = 0;
         spawnEnemy();
     }
@@ -1601,23 +1672,11 @@ function updateEnemies() {
     for (let i = enemies.length - 1; i >= 0; i--) {
         const en = enemies[i];
 
-        // --- IA : Navigation vers une position autour du joueur ---
+        // Vampire Survivor: toujours foncer vers le joueur
         const toPlayerX = boat.x - en.x;
         const toPlayerY = boat.y - en.y;
         const distToPlayer = Math.sqrt(toPlayerX * toPlayerX + toPlayerY * toPlayerY);
-
-        // L'ennemi essaie de garder une distance de ~200-350px
-        let desiredAngle;
-        if (distToPlayer > 350) {
-            // Se rapprocher
-            desiredAngle = Math.atan2(toPlayerY, toPlayerX);
-        } else if (distToPlayer < 150) {
-            // S'éloigner
-            desiredAngle = Math.atan2(-toPlayerY, -toPlayerX);
-        } else {
-            // Orbiter (tourner autour du joueur)
-            desiredAngle = Math.atan2(toPlayerY, toPlayerX) + Math.PI * 0.4 * en.orbitDir;
-        }
+        let desiredAngle = Math.atan2(toPlayerY, toPlayerX);
 
         // Tourner progressivement vers l'angle désiré
         let angleDiff = desiredAngle - en.angle;
@@ -1632,10 +1691,11 @@ function updateEnemies() {
         en.vx *= ENEMY_DRAG;
         en.vy *= ENEMY_DRAG;
 
-        // Limiter la vitesse
+        // Limiter la vitesse (scale avec le level)
+        const currentEnemySpeed = ENEMY_SPEED + playerLevel * 5;
         const sp2 = en.vx * en.vx + en.vy * en.vy;
-        if (sp2 > ENEMY_SPEED * ENEMY_SPEED) {
-            const r = ENEMY_SPEED / Math.sqrt(sp2);
+        if (sp2 > currentEnemySpeed * currentEnemySpeed) {
+            const r = currentEnemySpeed / Math.sqrt(sp2);
             en.vx *= r;
             en.vy *= r;
         }
@@ -1650,22 +1710,7 @@ function updateEnemies() {
         if (en.y < m) { en.y = m; en.vy = Math.abs(en.vy); }
         if (en.y > height - m) { en.y = height - m; en.vy = -Math.abs(en.vy); }
 
-        // --- IA : Tir ---
-        en.shootTimer -= dt;
-        if (en.shootTimer <= 0 && distToPlayer < 500 && distToPlayer > 50) {
-            en.shootTimer = ENEMY_SHOOT_INTERVAL_MIN + xorshift() * (ENEMY_SHOOT_INTERVAL_MAX - ENEMY_SHOOT_INTERVAL_MIN);
-            // Tirer vers le joueur avec une imprécision
-            const aimAngle = Math.atan2(toPlayerY, toPlayerX) + (xorshift() - 0.5) * ENEMY_MISSILE_PRECISION * 2;
-            enemyMissiles.push({
-                x: en.x + Math.cos(aimAngle) * (ENEMY_HALF_W + 5),
-                y: en.y + Math.sin(aimAngle) * (ENEMY_HALF_W + 5),
-                vx: Math.cos(aimAngle) * ENEMY_MISSILE_SPEED + en.vx * 0.2,
-                vy: Math.sin(aimAngle) * ENEMY_MISSILE_SPEED + en.vy * 0.2,
-                owner: en.id
-            });
-        }
-
-        // Collision directe ennemi-joueur (dégâts de contact)
+        // Collision directe ennemi-joueur (dégâts de contact — VS style)
         if (distToPlayer < (BOAT_HALF_W + ENEMY_HALF_W) * 0.8) {
             playerHP -= 0.3 * dt * 60; // ~0.3 HP par frame de contact
             // Repousser les deux
@@ -1752,16 +1797,197 @@ function spawnEnemy() {
     else { sx = margin + xorshift() * (width - margin * 2); sy = height - margin; }             // bas
 
     const angleToCenter = Math.atan2(height / 2 - sy, width / 2 - sx);
+    const scaledHP = ENEMY_HP + Math.floor(playerLevel / 2);
     enemies.push({
         id: nextEnemyId++,
         x: sx, y: sy,
         vx: 0, vy: 0,
         angle: angleToCenter,
-        hp: ENEMY_HP,
+        hp: scaledHP,
+        maxHP: scaledHP,
         alive: true,
-        shootTimer: 1.5 + xorshift() * 2,
+        shootTimer: 0,
         orbitDir: xorshift() > 0.5 ? 1 : -1
     });
+}
+
+// ==========================================
+// VAMPIRE SURVIVOR — AUTO-FIRE
+// ==========================================
+function autoFire() {
+    if (!boat || !playerAlive || enemies.length === 0 || gamePaused) return;
+
+    autoFireTimer += DT;
+    if (autoFireTimer < autoFireInterval) return;
+    autoFireTimer -= autoFireInterval;
+
+    // Sort enemies by distance to player
+    const sorted = enemies.map((e, idx) => {
+        const dx = e.x - boat.x, dy = e.y - boat.y;
+        return { idx, d2: dx * dx + dy * dy };
+    }).sort((a, b) => a.d2 - b.d2);
+
+    for (let b = 0; b < bulletCount; b++) {
+        if (playerBullets.length >= MAX_PLAYER_BULLETS) break;
+
+        const targetInfo = sorted[Math.min(b, sorted.length - 1)];
+        const target = enemies[targetInfo.idx];
+        const dx = target.x - boat.x;
+        const dy = target.y - boat.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) continue;
+
+        let angle = Math.atan2(dy, dx);
+        // Slight spread for multishot
+        if (bulletCount > 1) {
+            const spread = 0.15;
+            const offset = (b - (bulletCount - 1) / 2) * spread;
+            angle += offset;
+        }
+
+        playerBullets.push({
+            x: boat.x + Math.cos(angle) * (BOAT_HALF_W + 5),
+            y: boat.y + Math.sin(angle) * (BOAT_HALF_W + 5),
+            vx: Math.cos(angle) * bulletSpeed,
+            vy: Math.sin(angle) * bulletSpeed,
+            damage: bulletDamage,
+            size: bulletSize,
+            piercing: bulletPiercing,
+            pierced: 0
+        });
+    }
+}
+
+// ==========================================
+// PLAYER BULLETS INTEGRATION
+// ==========================================
+function integratePlayerBullets() {
+    const dt = DT / SUBSTEPS;
+
+    for (let i = playerBullets.length - 1; i >= 0; i--) {
+        const b = playerBullets[i];
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+
+        // Remove if out of bounds
+        if (b.x < -50 || b.x > width + 50 || b.y < -50 || b.y > height + 50) {
+            playerBullets.splice(i, 1);
+            continue;
+        }
+
+        // Check collision with enemies
+        let removed = false;
+        for (let j = enemies.length - 1; j >= 0; j--) {
+            const en = enemies[j];
+            const dx = b.x - en.x, dy = b.y - en.y;
+            const dist2 = dx * dx + dy * dy;
+            const hitR = b.size + ENEMY_HALF_W;
+            if (dist2 < hitR * hitR) {
+                en.hp -= b.damage;
+                b.pierced++;
+
+                // Knockback
+                const dist = Math.sqrt(dist2) || 1;
+                en.vx += (dx / dist) * 80;
+                en.vy += (dy / dist) * 80;
+
+                // Small foam burst on hit
+                for (let f = 0; f < 3 && foamCount < MAX_FOAM; f++) {
+                    const angle = xorshift() * Math.PI * 2;
+                    const speed = 50 + xorshift() * 100;
+                    foam_x[foamCount] = b.x;
+                    foam_y[foamCount] = b.y;
+                    foam_vx[foamCount] = Math.cos(angle) * speed;
+                    foam_vy[foamCount] = Math.sin(angle) * speed;
+                    foam_life[foamCount] = 0.2 + xorshift() * 0.2;
+                    foam_size[foamCount] = 0.5 + xorshift() * 0.5;
+                    foamCount++;
+                }
+
+                if (en.hp <= 0) {
+                    destroyEnemy(j);
+                }
+
+                if (b.pierced > b.piercing) {
+                    playerBullets.splice(i, 1);
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        if (removed) continue;
+
+        // Bullet water push removed for performance (was O(bullets*particles))
+    }
+}
+
+// ==========================================
+// LEVEL-UP & UPGRADES
+// ==========================================
+function checkLevelUp() {
+    while (playerXP >= playerXPToNext) {
+        playerXP -= playerXPToNext;
+        playerLevel++;
+        playerXPToNext = Math.floor(50 * Math.pow(1.3, playerLevel - 1));
+
+        // Generate 3 random upgrade choices
+        const maxLevels = { fireRate: 8, damage: 8, bulletSpeed: 5, multishot: 4, piercing: 3, maxHP: 5, regen: 5, bulletSize: 5 };
+        const available = Object.keys(upgradeLevels).filter(k => upgradeLevels[k] < maxLevels[k]);
+
+        if (available.length === 0) return;
+
+        // Shuffle
+        for (let i = available.length - 1; i > 0; i--) {
+            const j = Math.floor(xorshift() * (i + 1));
+            [available[i], available[j]] = [available[j], available[i]];
+        }
+
+        const choices = available.slice(0, Math.min(3, available.length)).map(id => ({
+            id,
+            currentLevel: upgradeLevels[id]
+        }));
+
+        gamePaused = true;
+        self.postMessage({ type: 'levelUp', level: playerLevel, choices });
+        break; // Handle one level at a time
+    }
+}
+
+function applyUpgrade(upgradeId) {
+    if (!upgradeLevels.hasOwnProperty(upgradeId)) return;
+    upgradeLevels[upgradeId]++;
+
+    switch (upgradeId) {
+        case 'fireRate':
+            autoFireInterval = Math.max(0.12, 1.0 - upgradeLevels.fireRate * 0.11);
+            break;
+        case 'damage':
+            bulletDamage = 1 + upgradeLevels.damage;
+            break;
+        case 'bulletSpeed':
+            bulletSpeed = 500 + upgradeLevels.bulletSpeed * 80;
+            break;
+        case 'multishot':
+            bulletCount = 1 + upgradeLevels.multishot;
+            break;
+        case 'piercing':
+            bulletPiercing = upgradeLevels.piercing;
+            break;
+        case 'maxHP':
+            playerMaxHP = 100 + upgradeLevels.maxHP * 25;
+            playerHP = Math.min(playerHP + 25, playerMaxHP);
+            break;
+        case 'regen':
+            hpRegen = upgradeLevels.regen * 2;
+            break;
+        case 'bulletSize':
+            bulletSize = 4 + upgradeLevels.bulletSize * 2;
+            break;
+    }
+
+    gamePaused = false;
+    // Check if another level-up is pending
+    checkLevelUp();
 }
 
 // ==========================================
@@ -1908,10 +2134,26 @@ self.onmessage = function(e) {
             boatMissile = null;
             enemies = [];
             enemyMissiles = [];
+            playerBullets = [];
             enemySpawnTimer = 0;
             playerHP = 100;
+            playerMaxHP = 100;
             playerScore = 0;
             playerAlive = true;
+            playerLevel = 1;
+            playerXP = 0;
+            playerXPToNext = 50;
+            gamePaused = false;
+            gameTime = 0;
+            autoFireTimer = 0;
+            autoFireInterval = 1.0;
+            bulletDamage = 1;
+            bulletSpeed = 500;
+            bulletSize = 4;
+            bulletCount = 1;
+            bulletPiercing = 0;
+            hpRegen = 0;
+            Object.keys(upgradeLevels).forEach(k => upgradeLevels[k] = 0);
             if (boat) {
                 boat = null;
                 if (gravityStored != null) {
@@ -2067,13 +2309,28 @@ self.onmessage = function(e) {
                 fx: 0,
                 fy: 0
             };
-            // Réinit le mode combat
+            // Réinit le mode combat avec VS stats
             playerHP = playerMaxHP;
             playerAlive = true;
             playerScore = 0;
+            playerLevel = 1;
+            playerXP = 0;
+            playerXPToNext = 50;
+            gamePaused = false;
+            gameTime = 0;
+            autoFireTimer = 0;
+            autoFireInterval = 1.0;
+            bulletDamage = 1;
+            bulletSpeed = 500;
+            bulletSize = 4;
+            bulletCount = 1;
+            bulletPiercing = 0;
+            hpRegen = 0;
+            Object.keys(upgradeLevels).forEach(k => upgradeLevels[k] = 0);
             enemies = [];
             enemyMissiles = [];
-            enemySpawnTimer = 2.0; // Premier ennemi dans 2s
+            playerBullets = [];
+            enemySpawnTimer = 2.0;
             break;
 
         case 'removeBoat':
@@ -2081,8 +2338,10 @@ self.onmessage = function(e) {
             boatMissile = null;
             enemies = [];
             enemyMissiles = [];
+            playerBullets = [];
             playerAlive = true;
             playerHP = playerMaxHP;
+            gamePaused = false;
             if (gravityStored != null) {
                 GRAVITY_Y = gravityStored.y;
                 GRAVITY_X = gravityStored.x;
@@ -2090,25 +2349,13 @@ self.onmessage = function(e) {
             }
             break;
 
-        case 'fireMissile':
-            if (boat && !boatMissile) {
-                const fSide = msg.side; // 1 = droite, -1 = gauche
-                const fCosA = Math.cos(boat.angle);
-                const fSinA = Math.sin(boat.angle);
-                // Direction perpendiculaire au bateau
-                const perpX = -fSinA * fSide;
-                const perpY = fCosA * fSide;
-                boatMissile = {
-                    x: boat.x + perpX * (BOAT_HALF_H + 4),
-                    y: boat.y + perpY * (BOAT_HALF_H + 4),
-                    vx: perpX * MISSILE_SPEED + boat.vx * 0.3,
-                    vy: perpY * MISSILE_SPEED + boat.vy * 0.3
-                };
-            }
+        case 'applyUpgrade':
+            applyUpgrade(msg.upgradeId);
             break;
 
+        // Legacy missile commands (disabled for VS mode)
+        case 'fireMissile':
         case 'detonateMissile':
-            detonateMissile();
             break;
 
         case 'boatKeys':

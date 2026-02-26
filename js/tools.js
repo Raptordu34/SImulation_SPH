@@ -41,22 +41,28 @@ export class ToolManager {
         this.rigidBodiesData = null;
         this.rigidBodyCount = 0;
         this.boatData = null;
-        this.missileData = null;
+
+        // Player bullets (fed from main.js)
+        this.playerBulletsData = null;
+        this.playerBulletCount = 0;
 
         // Enemy / combat state (fed from main.js each frame)
         this.enemiesData = [];
-        this.enemyMissilesData = [];
         this.playerHP = 100;
         this.playerMaxHP = 100;
         this.playerScore = 0;
         this.playerAlive = true;
+        this.playerLevel = 1;
+        this.playerXP = 0;
+        this.playerXPToNext = 50;
+        this.gamePaused = false;
+        this.gameTime = 0;
         this._gameOverShown = false;
 
         // VFX : explosions visuelles (overlay)
         this.vfxExplosions = [];  // { x, y, age, maxAge, radius }
         this.vfxDebris = [];      // { x, y, vx, vy, life, maxLife, size, r, g, b }
-        this.vfxSmoke = [];       // traînée de fumée du missile
-        this._lastMissilePos = null;
+        this.vfxSmoke = [];       // traînée de fumée
 
         // Active tool info element
         this.toolInfoEl = document.getElementById('active-tool-info');
@@ -258,25 +264,11 @@ export class ToolManager {
                 break;
 
             case 'boat':
-                if (this.boatData) {
-                    // Bateau déjà placé → logique missile
-                    if (this.missileData) {
-                        // Missile en vol → le faire exploser
-                        this.triggerExplosionVFX(this.missileData.x, this.missileData.y, 180);
-                        this.worker.postMessage({ type: 'detonateMissile' });
-                    } else {
-                        // Pas de missile → en tirer un perpendiculairement
-                        const bx = this.boatData.x, by = this.boatData.y, ba = this.boatData.angle;
-                        const dx = pos.x - bx, dy = pos.y - by;
-                        // Produit vectoriel pour déterminer le côté de la souris
-                        const cross = Math.cos(ba) * dy - Math.sin(ba) * dx;
-                        const side = cross > 0 ? 1 : -1;
-                        this.worker.postMessage({ type: 'fireMissile', side });
-                    }
-                } else {
+                if (!this.boatData) {
                     // Pas encore de bateau → le placer
                     this.worker.postMessage({ type: 'placeBoat', x: pos.x, y: pos.y });
                 }
+                // En mode VS, pas de tir manuel
                 break;
 
             case 'rigidBody':
@@ -516,7 +508,7 @@ export class ToolManager {
                 this.vfxDebris.splice(i, 1);
             }
         }
-        // Fumée missile
+        // Fumée (generic VFX)
         for (let i = this.vfxSmoke.length - 1; i >= 0; i--) {
             const s = this.vfxSmoke[i];
             s.life += dt;
@@ -527,35 +519,12 @@ export class ToolManager {
                 this.vfxSmoke.splice(i, 1);
             }
         }
-        // Ajouter de la fumée derrière le missile
-        if (this.missileData) {
-            const mx = this.missileData.x, my = this.missileData.y;
-            if (this._lastMissilePos) {
-                // Plusieurs puffs entre les deux positions pour un trail continu
-                const puffs = 2;
-                for (let p = 0; p < puffs; p++) {
-                    const t = p / puffs;
-                    this.vfxSmoke.push({
-                        x: this._lastMissilePos.x + (mx - this._lastMissilePos.x) * t + (Math.random() - 0.5) * 3,
-                        y: this._lastMissilePos.y + (my - this._lastMissilePos.y) * t + (Math.random() - 0.5) * 3,
-                        vx: (Math.random() - 0.5) * 20,
-                        vy: (Math.random() - 0.5) * 20,
-                        life: 0,
-                        maxLife: 0.4 + Math.random() * 0.3,
-                        size: 2 + Math.random() * 2
-                    });
-                }
-            }
-            this._lastMissilePos = { x: mx, y: my };
-        } else {
-            this._lastMissilePos = null;
-        }
     }
 
     _renderVFX(ctx) {
         const now = performance.now() / 1000;
 
-        // 1. Fumée du missile (dessinée en premier, derrière le missile)
+        // 1. Smoke trails (drawn behind)
         for (const s of this.vfxSmoke) {
             const t = s.life / s.maxLife;
             const alpha = (1 - t) * 0.35;
@@ -565,44 +534,34 @@ export class ToolManager {
             ctx.fill();
         }
 
-        // 2. Explosions : flash initial + ondes de choc concentriques
+        // 2. Explosions: simplified (no radialGradient per frame)
         for (const exp of this.vfxExplosions) {
-            const t = exp.age / exp.maxAge; // 0→1
+            const t = exp.age / exp.maxAge;
             const r = exp.radius;
 
-            ctx.save();
-
-            // --- Flash blanc initial (très court) ---
+            // Flash
             if (t < 0.15) {
                 const flashT = t / 0.15;
-                const flashAlpha = (1 - flashT) * 0.65;
-                const flashR = r * 0.3 * flashT;
-                const flashGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, flashR + 20);
-                flashGrad.addColorStop(0, `rgba(255, 255, 255, ${flashAlpha})`);
-                flashGrad.addColorStop(0.5, `rgba(255, 240, 180, ${flashAlpha * 0.6})`);
-                flashGrad.addColorStop(1, `rgba(255, 200, 50, 0)`);
-                ctx.fillStyle = flashGrad;
+                const flashAlpha = (1 - flashT) * 0.6;
+                const flashR = r * 0.3 * flashT + 20;
+                ctx.fillStyle = `rgba(255, 240, 180, ${flashAlpha})`;
                 ctx.beginPath();
-                ctx.arc(exp.x, exp.y, flashR + 20, 0, Math.PI * 2);
+                ctx.arc(exp.x, exp.y, flashR, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // --- Boule de feu ---
+            // Fireball
             if (t < 0.5) {
                 const fireT = t / 0.5;
                 const fireR = r * 0.4 * fireT;
-                const fireAlpha = (1 - fireT) * 0.5;
-                const fireGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, fireR);
-                fireGrad.addColorStop(0, `rgba(255, 200, 50, ${fireAlpha})`);
-                fireGrad.addColorStop(0.4, `rgba(255, 100, 20, ${fireAlpha * 0.7})`);
-                fireGrad.addColorStop(1, `rgba(180, 30, 0, 0)`);
-                ctx.fillStyle = fireGrad;
+                const fireAlpha = (1 - fireT) * 0.45;
+                ctx.fillStyle = `rgba(255, 140, 30, ${fireAlpha})`;
                 ctx.beginPath();
                 ctx.arc(exp.x, exp.y, fireR, 0, Math.PI * 2);
                 ctx.fill();
             }
 
-            // --- Onde de choc 1 (rapide) ---
+            // Shockwave 1
             {
                 const waveT = Math.min(t * 1.8, 1.0);
                 const waveR = r * waveT;
@@ -614,7 +573,7 @@ export class ToolManager {
                 ctx.stroke();
             }
 
-            // --- Onde de choc 2 (retardée) ---
+            // Shockwave 2
             if (t > 0.08) {
                 const waveT2 = Math.min((t - 0.08) * 1.5, 1.0);
                 const waveR2 = r * 0.8 * waveT2;
@@ -626,36 +585,27 @@ export class ToolManager {
                 ctx.stroke();
             }
 
-            // --- Fumée résiduelle (apparait tard) ---
+            // Residual smoke
             if (t > 0.3) {
                 const smokeT = (t - 0.3) / 0.7;
                 const smokeAlpha = Math.min(smokeT * 0.8, 0.25) * (1 - smokeT);
                 const smokeR = r * 0.3 + r * 0.3 * smokeT;
-                const smokeGrad = ctx.createRadialGradient(exp.x, exp.y, 0, exp.x, exp.y, smokeR);
-                smokeGrad.addColorStop(0, `rgba(60, 60, 70, ${smokeAlpha})`);
-                smokeGrad.addColorStop(1, `rgba(40, 40, 50, 0)`);
-                ctx.fillStyle = smokeGrad;
+                ctx.fillStyle = `rgba(55, 55, 65, ${smokeAlpha})`;
                 ctx.beginPath();
                 ctx.arc(exp.x, exp.y, smokeR, 0, Math.PI * 2);
                 ctx.fill();
             }
-
-            ctx.restore();
         }
 
-        // 3. Débris (éclats incandescents)
+        // 3. Debris (no shadowBlur)
         for (const d of this.vfxDebris) {
             const t = d.life / d.maxLife;
             const alpha = (1 - t);
-            ctx.shadowColor = `rgba(${d.r}, ${d.g}, ${d.b}, ${alpha * 0.6})`;
-            ctx.shadowBlur = 6;
             ctx.fillStyle = `rgba(${d.r}, ${d.g}, ${d.b}, ${alpha})`;
             ctx.beginPath();
             ctx.arc(d.x, d.y, d.size * (1 - t * 0.5), 0, Math.PI * 2);
             ctx.fill();
         }
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
     }
 
     // ==========================================
@@ -702,11 +652,7 @@ export class ToolManager {
             ctx.save();
             ctx.translate(em.x, em.y);
 
-            // Glow
-            ctx.shadowColor = 'rgba(6, 182, 212, 0.5)';
-            ctx.shadowBlur = 10;
-
-            // Body
+            // Body (no shadowBlur)
             ctx.fillStyle = 'rgba(6, 182, 212, 0.5)';
             ctx.strokeStyle = 'rgba(6, 182, 212, 0.9)';
             ctx.lineWidth = 2;
@@ -714,8 +660,6 @@ export class ToolManager {
             ctx.arc(0, 0, 12, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
-
-            ctx.shadowBlur = 0;
 
             // Direction arrow
             const ax = Math.cos(em.angle) * 20;
@@ -744,10 +688,6 @@ export class ToolManager {
             ctx.save();
             ctx.translate(drain.x, drain.y);
 
-            // Glow
-            ctx.shadowColor = 'rgba(239, 68, 68, 0.4)';
-            ctx.shadowBlur = 8;
-
             ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
             ctx.lineWidth = 2;
             ctx.setLineDash([4, 3]);
@@ -755,8 +695,6 @@ export class ToolManager {
             ctx.arc(0, 0, drain.radius, 0, Math.PI * 2);
             ctx.stroke();
             ctx.setLineDash([]);
-
-            ctx.shadowBlur = 0;
 
             // Animated spiral
             ctx.strokeStyle = 'rgba(239, 68, 68, 0.35)';
@@ -879,14 +817,9 @@ export class ToolManager {
             ctx.translate(x, y);
             ctx.rotate(a);
             
-            // Ombre portée sous le bateau
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-            ctx.shadowBlur = 8;
-            ctx.shadowOffsetY = 3;
-            
             // Coque principale profilée
-            ctx.fillStyle = '#f8fafc'; // Blanc éclatant
-            ctx.strokeStyle = '#94a3b8'; // Contour gris
+            ctx.fillStyle = '#f8fafc';
+            ctx.strokeStyle = '#94a3b8';
             ctx.lineWidth = 1.5;
             
             ctx.beginPath();
@@ -897,9 +830,6 @@ export class ToolManager {
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
-            
-            // Désactiver l'ombre pour peindre l'intérieur
-            ctx.shadowColor = 'transparent';
             
             // Pont intérieur (finition bois)
             ctx.fillStyle = '#b45309'; 
@@ -936,89 +866,44 @@ export class ToolManager {
             ctx.restore();
         }
 
-        // Missile en vol
-        if (this.missileData) {
-            const mx = this.missileData.x, my = this.missileData.y;
-            const mvx = this.missileData.vx, mvy = this.missileData.vy;
-            const mAngle = Math.atan2(mvy, mvx);
-            const t = performance.now() / 1000;
+        // ==========================================
+        // PLAYER BULLETS (auto-fire)
+        // ==========================================
+        if (this.playerBulletsData && this.playerBulletCount > 0) {
+            for (let i = 0; i < this.playerBulletCount; i++) {
+                const bx = this.playerBulletsData[i * 5];
+                const by = this.playerBulletsData[i * 5 + 1];
+                const bvx = this.playerBulletsData[i * 5 + 2];
+                const bvy = this.playerBulletsData[i * 5 + 3];
+                const bsize = this.playerBulletsData[i * 5 + 4];
+                const bAngle = Math.atan2(bvy, bvx);
 
-            ctx.save();
-            ctx.translate(mx, my);
-            ctx.rotate(mAngle);
+                ctx.save();
+                ctx.translate(bx, by);
 
-            // Halo lumineux autour du missile
-            const haloGrad = ctx.createRadialGradient(0, 0, 2, 0, 0, 20);
-            haloGrad.addColorStop(0, 'rgba(255, 150, 50, 0.25)');
-            haloGrad.addColorStop(1, 'rgba(255, 100, 0, 0)');
-            ctx.fillStyle = haloGrad;
-            ctx.beginPath();
-            ctx.arc(0, 0, 20, 0, Math.PI * 2);
-            ctx.fill();
+                // Glow (simple solid disc instead of gradient)
+                ctx.fillStyle = 'rgba(80, 200, 255, 0.25)';
+                ctx.beginPath();
+                ctx.arc(0, 0, bsize + 4, 0, Math.PI * 2);
+                ctx.fill();
 
-            // Lueur de la traînée
-            ctx.shadowColor = 'rgba(255, 80, 0, 0.8)';
-            ctx.shadowBlur = 16;
+                // Core bullet
+                ctx.fillStyle = '#e0f2fe';
+                ctx.beginPath();
+                ctx.arc(0, 0, bsize * 0.6, 0, Math.PI * 2);
+                ctx.fill();
 
-            // Corps du missile (métal sombre)
-            ctx.fillStyle = '#1e293b';
-            ctx.beginPath();
-            ctx.ellipse(0, 0, 9, 3.5, 0, 0, Math.PI * 2);
-            ctx.fill();
+                // Trailing line
+                ctx.strokeStyle = 'rgba(100, 200, 255, 0.3)';
+                ctx.lineWidth = bsize * 0.4;
+                ctx.beginPath();
+                const tailLen = 12 + bsize;
+                ctx.moveTo(0, 0);
+                ctx.lineTo(-Math.cos(bAngle) * tailLen, -Math.sin(bAngle) * tailLen);
+                ctx.stroke();
 
-            // Bande dorée
-            ctx.strokeStyle = 'rgba(255, 200, 80, 0.6)';
-            ctx.lineWidth = 0.8;
-            ctx.beginPath();
-            ctx.ellipse(2, 0, 2, 3.5, 0, 0, Math.PI * 2);
-            ctx.stroke();
-
-            // Ogive (rouge vif)
-            ctx.fillStyle = '#dc2626';
-            ctx.beginPath();
-            ctx.moveTo(9, 0);
-            ctx.quadraticCurveTo(12, -2, 14, 0);
-            ctx.quadraticCurveTo(12, 2, 9, 0);
-            ctx.fill();
-
-            // Ailerons arrière
-            ctx.fillStyle = '#475569';
-            ctx.beginPath();
-            ctx.moveTo(-8, -3);
-            ctx.lineTo(-12, -6);
-            ctx.lineTo(-10, -3);
-            ctx.fill();
-            ctx.beginPath();
-            ctx.moveTo(-8, 3);
-            ctx.lineTo(-12, 6);
-            ctx.lineTo(-10, 3);
-            ctx.fill();
-
-            // Flamme d'échappement principale (animée)
-            ctx.shadowBlur = 0;
-            const flicker = 0.8 + Math.sin(t * 40) * 0.2;
-            const flameLen = 16 * flicker;
-            const grad = ctx.createLinearGradient(-9, 0, -9 - flameLen, 0);
-            grad.addColorStop(0, 'rgba(255, 255, 200, 0.9)');
-            grad.addColorStop(0.3, 'rgba(255, 180, 50, 0.8)');
-            grad.addColorStop(0.7, 'rgba(255, 80, 0, 0.4)');
-            grad.addColorStop(1, 'rgba(200, 30, 0, 0)');
-            ctx.fillStyle = grad;
-            ctx.beginPath();
-            ctx.moveTo(-9, -2.5);
-            ctx.quadraticCurveTo(-9 - flameLen * 0.6, -4 * flicker, -9 - flameLen, 0);
-            ctx.quadraticCurveTo(-9 - flameLen * 0.6, 4 * flicker, -9, 2.5);
-            ctx.fill();
-
-            // Flamme intérieure (coeur blanc)
-            ctx.fillStyle = 'rgba(255, 255, 230, 0.6)';
-            ctx.beginPath();
-            ctx.moveTo(-9, -1.2);
-            ctx.quadraticCurveTo(-9 - flameLen * 0.3, -1.5, -9 - flameLen * 0.5, 0);
-            ctx.quadraticCurveTo(-9 - flameLen * 0.3, 1.5, -9, 1.2);
-            ctx.fill();
-
-            ctx.restore();
+                ctx.restore();
+            }
         }
 
         // ==========================================
@@ -1034,11 +919,6 @@ export class ToolManager {
                 ctx.translate(ex, ey);
                 ctx.rotate(ea);
 
-                // Shadow
-                ctx.shadowColor = 'rgba(0,0,0,0.3)';
-                ctx.shadowBlur = 6;
-                ctx.shadowOffsetY = 2;
-
                 // Hull - dark red
                 ctx.fillStyle = '#1e1e1e';
                 ctx.strokeStyle = '#dc2626';
@@ -1051,8 +931,6 @@ export class ToolManager {
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
-
-                ctx.shadowColor = 'transparent';
 
                 // Danger stripe
                 ctx.strokeStyle = 'rgba(255,60,60,0.7)';
@@ -1080,7 +958,7 @@ export class ToolManager {
                 ctx.restore();
 
                 // HP bar above enemy
-                const hpFrac = en.hp / 3;
+                const hpFrac = en.hp / (en.maxHP || 3);
                 const barW = 24, barH = 3;
                 const barX = ex - barW / 2, barY = ey - eWid - 10;
                 ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -1091,79 +969,25 @@ export class ToolManager {
         }
 
         // ==========================================
-        // ENEMY MISSILES
-        // ==========================================
-        if (this.enemyMissilesData && this.enemyMissilesData.length > 0) {
-            for (const em of this.enemyMissilesData) {
-                const emAngle = Math.atan2(em.vy, em.vx);
-                ctx.save();
-                ctx.translate(em.x, em.y);
-                ctx.rotate(emAngle);
-
-                // Red glow
-                const eGrad = ctx.createRadialGradient(0, 0, 1, 0, 0, 12);
-                eGrad.addColorStop(0, 'rgba(255,60,60,0.3)');
-                eGrad.addColorStop(1, 'rgba(255,0,0,0)');
-                ctx.fillStyle = eGrad;
-                ctx.beginPath();
-                ctx.arc(0, 0, 12, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Body
-                ctx.fillStyle = '#7f1d1d';
-                ctx.beginPath();
-                ctx.ellipse(0, 0, 6, 2.5, 0, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Tip
-                ctx.fillStyle = '#fbbf24';
-                ctx.beginPath();
-                ctx.moveTo(6, 0);
-                ctx.quadraticCurveTo(9, -1.5, 10, 0);
-                ctx.quadraticCurveTo(9, 1.5, 6, 0);
-                ctx.fill();
-
-                // Flame
-                const fl = 0.8 + Math.sin(performance.now() / 25) * 0.2;
-                const fLen = 8 * fl;
-                const fGrad = ctx.createLinearGradient(-6, 0, -6 - fLen, 0);
-                fGrad.addColorStop(0, 'rgba(255,200,100,0.8)');
-                fGrad.addColorStop(0.5, 'rgba(255,80,20,0.5)');
-                fGrad.addColorStop(1, 'rgba(200,20,0,0)');
-                ctx.fillStyle = fGrad;
-                ctx.beginPath();
-                ctx.moveTo(-6, -1.8);
-                ctx.quadraticCurveTo(-6 - fLen * 0.6, -2.5 * fl, -6 - fLen, 0);
-                ctx.quadraticCurveTo(-6 - fLen * 0.6, 2.5 * fl, -6, 1.8);
-                ctx.fill();
-
-                ctx.restore();
-            }
-        }
-
-        // ==========================================
-        // HUD: HP BAR + SCORE (only when boat active)
+        // HUD: HP BAR + XP BAR + LEVEL + SCORE
         // ==========================================
         if (this.boatData) {
+            // ---- HP Bar (bottom center) ----
             const hudY = h - 40;
             const hpBarW = 200, hpBarH = 14;
             const hpBarX = (w - hpBarW) / 2;
             const hpFrac = Math.max(0, this.playerHP / this.playerMaxHP);
 
-            // Background
             ctx.fillStyle = 'rgba(0,0,0,0.5)';
             ctx.beginPath();
             ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
             ctx.fill();
-
-            // Border
             ctx.strokeStyle = 'rgba(255,255,255,0.15)';
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
             ctx.stroke();
 
-            // HP fill
             const hpGrad = ctx.createLinearGradient(hpBarX, hudY, hpBarX + hpBarW * hpFrac, hudY);
             if (hpFrac > 0.5) {
                 hpGrad.addColorStop(0, '#22c55e');
@@ -1181,31 +1005,74 @@ export class ToolManager {
                 ctx.roundRect(hpBarX, hudY, hpBarW * hpFrac, hpBarH, 3);
                 ctx.fill();
             }
-
-            // HP text
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 10px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText(`${Math.ceil(this.playerHP)} / ${this.playerMaxHP}`, w / 2, hudY + hpBarH / 2);
-
-            // HP label
             ctx.fillStyle = 'rgba(255,255,255,0.6)';
             ctx.font = '9px system-ui, sans-serif';
             ctx.textAlign = 'right';
             ctx.fillText('HP', hpBarX - 8, hudY + hpBarH / 2);
 
-            // ---- Score (top-right) ----
+            // ---- XP Bar (above HP bar) ----
+            const xpBarY = hudY - 22;
+            const xpBarH = 8;
+            const xpFrac = this.playerXPToNext > 0 ? Math.min(1, this.playerXP / this.playerXPToNext) : 0;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.4)';
+            ctx.beginPath();
+            ctx.roundRect(hpBarX - 4, xpBarY - 2, hpBarW + 8, xpBarH + 4, 4);
+            ctx.fill();
+
+            if (xpFrac > 0) {
+                const xpGrad = ctx.createLinearGradient(hpBarX, xpBarY, hpBarX + hpBarW * xpFrac, xpBarY);
+                xpGrad.addColorStop(0, '#8b5cf6');
+                xpGrad.addColorStop(1, '#a78bfa');
+                ctx.fillStyle = xpGrad;
+                ctx.beginPath();
+                ctx.roundRect(hpBarX, xpBarY, hpBarW * xpFrac, xpBarH, 2);
+                ctx.fill();
+            }
+
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 7px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${this.playerXP} / ${this.playerXPToNext} XP`, w / 2, xpBarY + xpBarH / 2);
+
+            // ---- Level badge (left of bars) ----
+            const lvlX = hpBarX - 40;
+            const lvlY = hudY - 10;
+            ctx.fillStyle = 'rgba(139,92,246,0.7)';
+            ctx.beginPath();
+            ctx.arc(lvlX, lvlY, 16, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 12px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${this.playerLevel}`, lvlX, lvlY);
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.font = '7px system-ui, sans-serif';
+            ctx.fillText('LVL', lvlX, lvlY - 20);
+
+            // ---- Score + Time (top-right) ----
             const scoreStr = `SCORE  ${this.playerScore}`;
+            const minutes = Math.floor((this.gameTime || 0) / 60);
+            const seconds = Math.floor((this.gameTime || 0) % 60);
+            const timeStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
             ctx.font = 'bold 16px system-ui, sans-serif';
             ctx.textAlign = 'right';
             ctx.textBaseline = 'top';
 
-            // Score background pill
             const scoreW = ctx.measureText(scoreStr).width + 20;
             ctx.fillStyle = 'rgba(0,0,0,0.45)';
             ctx.beginPath();
-            ctx.roundRect(w - scoreW - 16, 12, scoreW + 8, 28, 8);
+            ctx.roundRect(w - scoreW - 16, 12, scoreW + 8, 48, 8);
             ctx.fill();
             ctx.strokeStyle = 'rgba(255,255,255,0.1)';
             ctx.lineWidth = 1;
@@ -1213,6 +1080,10 @@ export class ToolManager {
 
             ctx.fillStyle = '#fbbf24';
             ctx.fillText(scoreStr, w - 16, 17);
+
+            ctx.font = '13px system-ui, sans-serif';
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.fillText(timeStr, w - 16, 38);
         }
 
         // ==========================================
@@ -1228,20 +1099,24 @@ export class ToolManager {
             // GAME OVER title
             ctx.font = 'bold 48px system-ui, sans-serif';
             ctx.fillStyle = '#ef4444';
-            ctx.shadowColor = 'rgba(239,68,68,0.6)';
-            ctx.shadowBlur = 20;
             ctx.fillText('GAME OVER', w / 2, h / 2 - 30);
-            ctx.shadowBlur = 0;
 
             // Score
             ctx.font = 'bold 22px system-ui, sans-serif';
             ctx.fillStyle = '#fbbf24';
-            ctx.fillText(`Score final : ${this.playerScore}`, w / 2, h / 2 + 20);
+            ctx.fillText(`Score : ${this.playerScore}  |  Niveau ${this.playerLevel}`, w / 2, h / 2 + 20);
+
+            // Time
+            const goMin = Math.floor((this.gameTime || 0) / 60);
+            const goSec = Math.floor((this.gameTime || 0) % 60);
+            ctx.font = '16px system-ui, sans-serif';
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            ctx.fillText(`Survie : ${String(goMin).padStart(2, '0')}:${String(goSec).padStart(2, '0')}`, w / 2, h / 2 + 50);
 
             // Hint
             ctx.font = '14px system-ui, sans-serif';
             ctx.fillStyle = 'rgba(255,255,255,0.6)';
-            ctx.fillText('Cliquez sur Reset pour recommencer', w / 2, h / 2 + 55);
+            ctx.fillText('Cliquez sur Reset pour recommencer', w / 2, h / 2 + 80);
         }
 
         // Draw tool cursor when mouse is over canvas
@@ -1582,18 +1457,25 @@ export class ToolManager {
         this.rigidBodies = [];
         this.pendingPortal = null;
         this.boatData = null;
-        this.missileData = null;
+        this.playerBulletsData = null;
+        this.playerBulletCount = 0;
         this.enemiesData = [];
-        this.enemyMissilesData = [];
         this.playerHP = 100;
         this.playerMaxHP = 100;
         this.playerScore = 0;
         this.playerAlive = true;
+        this.playerLevel = 1;
+        this.playerXP = 0;
+        this.playerXPToNext = 50;
+        this.gamePaused = false;
+        this.gameTime = 0;
         this._gameOverShown = false;
         this.vfxExplosions = [];
         this.vfxDebris = [];
         this.vfxSmoke = [];
-        this._lastMissilePos = null;
+        // Hide level-up overlay if visible
+        const overlay = document.getElementById('levelup-overlay');
+        if (overlay) overlay.classList.add('hidden');
         this.worker.postMessage({ type: 'clearPortals' });
         this.worker.postMessage({ type: 'clearRigidBodies' });
         this.worker.postMessage({ type: 'removeBoat' });

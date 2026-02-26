@@ -72,6 +72,7 @@ const ui = new UI(worker, renderer, toolManager, recorder);
 // FRAME DATA RECEPTION
 // ==========================================
 let latestFrameData = null;
+let frameDataDirty = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let currentFps = 0;
@@ -94,14 +95,20 @@ worker.onmessage = function(e) {
             rigidBodies: msg.rigidBodies || null,
             rigidBodyCount: msg.rigidBodyCount ?? 0,
             boat: msg.boat || null,
-            missile: msg.missile || null,
             enemies: msg.enemies || [],
-            enemyMissiles: msg.enemyMissiles || [],
+            playerBullets: msg.playerBullets || null,
+            playerBulletCount: msg.playerBulletCount || 0,
             playerHP: msg.playerHP ?? 100,
             playerMaxHP: msg.playerMaxHP ?? 100,
             playerScore: msg.playerScore ?? 0,
-            playerAlive: msg.playerAlive ?? true
+            playerAlive: msg.playerAlive ?? true,
+            playerLevel: msg.playerLevel ?? 1,
+            playerXP: msg.playerXP ?? 0,
+            playerXPToNext: msg.playerXPToNext ?? 50,
+            gamePaused: msg.gamePaused ?? false,
+            gameTime: msg.gameTime ?? 0
         };
+        frameDataDirty = true;
     } else if (msg.type === 'wallsUpdated') {
         toolManager.walls = msg.walls;
     } else if (msg.type === 'enemyDestroyed') {
@@ -110,6 +117,8 @@ worker.onmessage = function(e) {
         toolManager.triggerExplosionVFX(msg.x, msg.y, 80);
     } else if (msg.type === 'playerDied') {
         toolManager.triggerExplosionVFX(msg.x, msg.y, 250);
+    } else if (msg.type === 'levelUp') {
+        showLevelUpUI(msg.level, msg.choices);
     }
 };
 
@@ -139,8 +148,8 @@ function renderLoop(timestamp) {
         ui.updateStats(currentFps, pc, fc, sf, mw, wc);
     }
 
-    // Upload latest frame data to GPU
-    if (latestFrameData) {
+    // Upload latest frame data to GPU (skip if unchanged)
+    if (latestFrameData && frameDataDirty) {
         renderer.updateParticleData(
             latestFrameData.positions,
             latestFrameData.densities,
@@ -153,6 +162,7 @@ function renderLoop(timestamp) {
             latestFrameData.foamSizes,
             latestFrameData.foamCount
         );
+        frameDataDirty = false;
     }
 
     // Mise à jour des contrôles bateau (clavier + manette) chaque frame
@@ -166,19 +176,67 @@ function renderLoop(timestamp) {
         toolManager.rigidBodiesData = latestFrameData.rigidBodies;
         toolManager.rigidBodyCount = latestFrameData.rigidBodyCount ?? 0;
         toolManager.boatData = latestFrameData.boat ?? null;
-        toolManager.missileData = latestFrameData.missile ?? null;
         toolManager.enemiesData = latestFrameData.enemies;
-        toolManager.enemyMissilesData = latestFrameData.enemyMissiles;
+        toolManager.playerBulletsData = latestFrameData.playerBullets;
+        toolManager.playerBulletCount = latestFrameData.playerBulletCount;
         toolManager.playerHP = latestFrameData.playerHP;
         toolManager.playerMaxHP = latestFrameData.playerMaxHP;
         toolManager.playerScore = latestFrameData.playerScore;
         toolManager.playerAlive = latestFrameData.playerAlive;
+        toolManager.playerLevel = latestFrameData.playerLevel;
+        toolManager.playerXP = latestFrameData.playerXP;
+        toolManager.playerXPToNext = latestFrameData.playerXPToNext;
+        toolManager.gamePaused = latestFrameData.gamePaused;
+        toolManager.gameTime = latestFrameData.gameTime;
     }
     // Render overlay (tools, cursors, objects)
     toolManager.renderOverlay();
 }
 
 requestAnimationFrame(renderLoop);
+
+// ==========================================
+// LEVEL-UP UI
+// ==========================================
+const UPGRADE_INFO = {
+    fireRate:    { name: 'Cadence +',      desc: 'Tir plus rapide',         icon: '⚡' },
+    damage:      { name: 'Dégâts +',       desc: 'Balles plus puissantes',  icon: '💥' },
+    bulletSpeed: { name: 'Vélocité +',     desc: 'Balles plus rapides',     icon: '🚀' },
+    multishot:   { name: 'Multishot',      desc: '+1 balle par salve',      icon: '🔫' },
+    piercing:    { name: 'Perçant',        desc: 'Traverse +1 ennemi',      icon: '🗡️' },
+    maxHP:       { name: 'Vitalité +',     desc: '+25 HP max',              icon: '❤️' },
+    regen:       { name: 'Régénération',   desc: 'Récupère des HP/sec',     icon: '💚' },
+    bulletSize:  { name: 'Calibre +',      desc: 'Balles plus grosses',     icon: '⭕' }
+};
+
+function showLevelUpUI(level, choices) {
+    const overlay = document.getElementById('levelup-overlay');
+    const title = document.getElementById('levelup-title');
+    const choicesContainer = document.getElementById('levelup-choices');
+
+    title.textContent = `Niveau ${level} !`;
+    choicesContainer.innerHTML = '';
+
+    for (const choice of choices) {
+        const info = UPGRADE_INFO[choice.id];
+        if (!info) continue;
+        const btn = document.createElement('button');
+        btn.className = 'levelup-choice';
+        btn.innerHTML = `
+            <div class="levelup-icon">${info.icon}</div>
+            <div class="levelup-name">${info.name}</div>
+            <div class="levelup-desc">${info.desc}</div>
+            <div class="levelup-level">Niv. ${choice.currentLevel} → ${choice.currentLevel + 1}</div>
+        `;
+        btn.addEventListener('click', () => {
+            worker.postMessage({ type: 'applyUpgrade', upgradeId: choice.id });
+            overlay.classList.add('hidden');
+        });
+        choicesContainer.appendChild(btn);
+    }
+
+    overlay.classList.remove('hidden');
+}
 
 // ==========================================
 // BATEAU — CONTRÔLE ZQSD + MANETTE
