@@ -145,14 +145,7 @@ export class ToolManager {
             if (e.key === 'Shift') this.shiftHeld = true;
             // Don't capture if typing in an input
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-            const toolMap = {
-                '1': 'push', '2': 'emitter', '3': 'drain', '4': 'wall',
-                '5': 'eraser', '6': 'vortex', '7': 'wind', '8': 'attractor',
-                '9': 'explosion', '0': 'localGravity', '-': 'freeze', '=': 'teleporter'
-            };
-            if (toolMap[e.key]) {
-                this.setTool(toolMap[e.key]);
-            }
+            
             // B: cycle rigid body shape (box → circle → triangle)
             if ((e.key === 'b' || e.key === 'B') && this.activeTool === 'rigidBody') {
                 const shapes = ['box', 'circle', 'triangle'];
@@ -727,14 +720,21 @@ export class ToolManager {
     // ==========================================
     // OVERLAY RENDERING
     // ==========================================
-    renderOverlay() {
+    renderOverlay(dt = 1/60) {
         const ctx = this.ctx;
         const w = this.overlay.width;
         const h = this.overlay.height;
         ctx.clearRect(0, 0, w, h);
 
-        // Mettre à jour et dessiner les VFX (dt estimé ~16ms)
-        this._updateVFX(1 / 60);
+        // Update game time
+        if (this.boatData && this.playerAlive && !this.gamePaused) {
+            this.gameTime += dt;
+        }
+
+        // Mettre à jour et dessiner les VFX
+        if (!this.gamePaused) {
+            this._updateVFX(dt);
+        }
         this._renderVFX(ctx);
 
         // Draw walls
@@ -1013,116 +1013,147 @@ export class ToolManager {
         if (this.boatData) {
             // ---- HP Bar (bottom center) ----
             const hudY = h - 40;
-            const hpBarW = 200, hpBarH = 14;
+            const hpBarW = 300, hpBarH = 20;
             const hpBarX = (w - hpBarW) / 2;
             const hpFrac = Math.max(0, this.playerHP / this.playerMaxHP);
 
-            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            // Background
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
             ctx.beginPath();
-            ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
+            ctx.roundRect(hpBarX - 6, hudY - 6, hpBarW + 12, hpBarH + 12, 8);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.roundRect(hpBarX - 4, hudY - 4, hpBarW + 8, hpBarH + 8, 6);
+            
+            // Border
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.3)';
+            ctx.lineWidth = 2;
             ctx.stroke();
 
+            // HP Fill
             const hpGrad = ctx.createLinearGradient(hpBarX, hudY, hpBarX + hpBarW * hpFrac, hudY);
             if (hpFrac > 0.5) {
                 hpGrad.addColorStop(0, '#22c55e');
-                hpGrad.addColorStop(1, '#16a34a');
+                hpGrad.addColorStop(1, '#4ade80');
             } else if (hpFrac > 0.25) {
                 hpGrad.addColorStop(0, '#eab308');
-                hpGrad.addColorStop(1, '#ca8a04');
+                hpGrad.addColorStop(1, '#fde047');
             } else {
                 hpGrad.addColorStop(0, '#ef4444');
-                hpGrad.addColorStop(1, '#dc2626');
+                hpGrad.addColorStop(1, '#f87171');
             }
+            
             if (hpFrac > 0) {
                 ctx.fillStyle = hpGrad;
                 ctx.beginPath();
-                ctx.roundRect(hpBarX, hudY, hpBarW * hpFrac, hpBarH, 3);
+                ctx.roundRect(hpBarX, hudY, hpBarW * hpFrac, hpBarH, 4);
+                ctx.fill();
+                
+                // Shine effect
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.beginPath();
+                ctx.roundRect(hpBarX, hudY, hpBarW * hpFrac, hpBarH / 2, 4);
                 ctx.fill();
             }
+
+            // HP Text
             ctx.fillStyle = '#fff';
-            ctx.font = 'bold 10px system-ui, sans-serif';
+            ctx.font = 'bold 14px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 4;
             ctx.fillText(`${Math.ceil(this.playerHP)} / ${this.playerMaxHP}`, w / 2, hudY + hpBarH / 2);
-            ctx.fillStyle = 'rgba(255,255,255,0.6)';
-            ctx.font = '9px system-ui, sans-serif';
-            ctx.textAlign = 'right';
-            ctx.fillText('HP', hpBarX - 8, hudY + hpBarH / 2);
+            ctx.shadowBlur = 0;
 
-            // ---- XP Bar (above HP bar) ----
-            const xpBarY = hudY - 22;
-            const xpBarH = 8;
+            // ---- XP Bar (top center) ----
+            const xpBarY = 20;
+            const xpBarW = w * 0.6;
+            const xpBarX = (w - xpBarW) / 2;
+            const xpBarH = 12;
             const xpFrac = this.playerXPToNext > 0 ? Math.min(1, this.playerXP / this.playerXPToNext) : 0;
 
-            ctx.fillStyle = 'rgba(0,0,0,0.4)';
+            // XP Background
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
             ctx.beginPath();
-            ctx.roundRect(hpBarX - 4, xpBarY - 2, hpBarW + 8, xpBarH + 4, 4);
+            ctx.roundRect(xpBarX - 4, xpBarY - 4, xpBarW + 8, xpBarH + 8, 6);
             ctx.fill();
+            ctx.strokeStyle = 'rgba(139, 92, 246, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
 
+            // XP Fill
             if (xpFrac > 0) {
-                const xpGrad = ctx.createLinearGradient(hpBarX, xpBarY, hpBarX + hpBarW * xpFrac, xpBarY);
+                const xpGrad = ctx.createLinearGradient(xpBarX, xpBarY, hpBarX + xpBarW * xpFrac, xpBarY);
                 xpGrad.addColorStop(0, '#8b5cf6');
-                xpGrad.addColorStop(1, '#a78bfa');
+                xpGrad.addColorStop(1, '#c084fc');
                 ctx.fillStyle = xpGrad;
                 ctx.beginPath();
-                ctx.roundRect(hpBarX, xpBarY, hpBarW * xpFrac, xpBarH, 2);
+                ctx.roundRect(xpBarX, xpBarY, xpBarW * xpFrac, xpBarH, 3);
+                ctx.fill();
+                
+                // Shine
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.beginPath();
+                ctx.roundRect(xpBarX, xpBarY, xpBarW * xpFrac, xpBarH / 2, 3);
                 ctx.fill();
             }
 
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 7px system-ui, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(`${this.playerXP} / ${this.playerXPToNext} XP`, w / 2, xpBarY + xpBarH / 2);
-
-            // ---- Level badge (left of bars) ----
-            const lvlX = hpBarX - 40;
-            const lvlY = hudY - 10;
-            ctx.fillStyle = 'rgba(139,92,246,0.7)';
+            // ---- Level badge (attached to left of XP bar) ----
+            const lvlX = xpBarX - 20;
+            const lvlY = xpBarY + xpBarH / 2;
+            
+            // Hexagon shape for level
+            ctx.fillStyle = '#4c1d95';
             ctx.beginPath();
-            ctx.arc(lvlX, lvlY, 16, 0, Math.PI * 2);
+            for (let i = 0; i < 6; i++) {
+                const angle = (Math.PI / 3) * i;
+                const px = lvlX + 24 * Math.cos(angle);
+                const py = lvlY + 24 * Math.sin(angle);
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-            ctx.lineWidth = 1.5;
+            
+            ctx.strokeStyle = '#a78bfa';
+            ctx.lineWidth = 2;
             ctx.stroke();
+
             ctx.fillStyle = '#fff';
-            ctx.font = 'bold 12px system-ui, sans-serif';
+            ctx.font = 'bold 18px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)';
+            ctx.shadowBlur = 4;
             ctx.fillText(`${this.playerLevel}`, lvlX, lvlY);
-            ctx.fillStyle = 'rgba(255,255,255,0.5)';
-            ctx.font = '7px system-ui, sans-serif';
-            ctx.fillText('LVL', lvlX, lvlY - 20);
+            ctx.shadowBlur = 0;
 
             // ---- Score + Time (top-right) ----
-            const scoreStr = `SCORE  ${this.playerScore}`;
             const minutes = Math.floor((this.gameTime || 0) / 60);
             const seconds = Math.floor((this.gameTime || 0) % 60);
             const timeStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-            ctx.font = 'bold 16px system-ui, sans-serif';
+            
             ctx.textAlign = 'right';
             ctx.textBaseline = 'top';
 
-            const scoreW = ctx.measureText(scoreStr).width + 20;
-            ctx.fillStyle = 'rgba(0,0,0,0.45)';
+            // Score Box
+            const scoreStr = this.playerScore.toString().padStart(6, '0');
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
             ctx.beginPath();
-            ctx.roundRect(w - scoreW - 16, 12, scoreW + 8, 48, 8);
+            ctx.roundRect(w - 160, 20, 140, 60, 8);
             ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(251, 191, 36, 0.3)';
+            ctx.lineWidth = 2;
             ctx.stroke();
 
+            // Time
+            ctx.font = 'bold 24px monospace';
+            ctx.fillStyle = '#fff';
+            ctx.fillText(timeStr, w - 30, 28);
+            
+            // Score
+            ctx.font = 'bold 18px monospace';
             ctx.fillStyle = '#fbbf24';
-            ctx.fillText(scoreStr, w - 16, 17);
-
-            ctx.font = '13px system-ui, sans-serif';
-            ctx.fillStyle = 'rgba(255,255,255,0.5)';
-            ctx.fillText(timeStr, w - 16, 38);
+            ctx.fillText(scoreStr, w - 30, 55);
         }
 
         // ==========================================

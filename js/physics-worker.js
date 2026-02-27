@@ -834,8 +834,10 @@ function applyBoatForces() {
             // Couple de rotation : les particules latérales font tourner le bateau
             const clx = ddx * Math.cos(-boat.angle) - ddy * Math.sin(-boat.angle);
             const cly = ddx * Math.sin(-boat.angle) + ddy * Math.cos(-boat.angle);
-            const pLocalVy = -p_vx[i] * sinA + p_vy[i] * cosA;
-            boat.torqueFromWater += cly * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
+            const relVx = p_vx[i] - boat.vx;
+            const relVy = p_vy[i] - boat.vy;
+            const pLocalVy = -relVx * sinA + relVy * cosA;
+            boat.torqueFromWater += clx * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
         }
 
         // --- 4. Collisions physiques avec la coque ---
@@ -1338,9 +1340,11 @@ let running = true;
 function simLoop() {
     if (!running) return;
 
+    const simStart = performance.now();
     for (let i = 0; i < SUBSTEPS; i++) {
         step();
     }
+    const simTime = performance.now() - simStart;
 
     // Sim FPS tracking
     simFrameCount++;
@@ -1400,6 +1404,7 @@ function simLoop() {
         particleCount,
         foamCount,
         simFps,
+        simTime,
         multiWorker: useMultiWorker,
         workerCount: numSubWorkers,
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
@@ -1734,6 +1739,18 @@ self.onmessage = function(e) {
                 particleCount,
                 foamCount
             });
+            break;
+
+        case 'pause':
+            running = false;
+            break;
+
+        case 'resume':
+            if (!running) {
+                running = true;
+                simFpsLastTime = performance.now();
+                simLoop();
+            }
             break;
     }
 };

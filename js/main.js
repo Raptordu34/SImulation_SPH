@@ -89,6 +89,7 @@ worker.onmessage = function(e) {
             particleCount: msg.particleCount,
             foamCount: msg.foamCount,
             simFps: msg.simFps || 0,
+            simTime: msg.simTime || 0,
             multiWorker: msg.multiWorker || false,
             workerCount: msg.workerCount || 0,
             rigidBodies: msg.rigidBodies || null,
@@ -111,21 +112,6 @@ function renderLoop(timestamp) {
     const dt = Math.min((timestamp - lastRenderTime) / 1000, 0.05);
     lastRenderTime = timestamp;
 
-    // FPS counter
-    frameCount++;
-    if (timestamp - lastFpsTime >= 1000) {
-        currentFps = frameCount;
-        frameCount = 0;
-        lastFpsTime = timestamp;
-
-        const pc = latestFrameData ? latestFrameData.particleCount : 0;
-        const fc = latestFrameData ? latestFrameData.foamCount : 0;
-        const sf = latestFrameData ? latestFrameData.simFps : 0;
-        const mw = latestFrameData ? latestFrameData.multiWorker : false;
-        const wc = latestFrameData ? latestFrameData.workerCount : 0;
-        ui.updateStats(currentFps, pc, fc, sf, mw, wc);
-    }
-
     // Upload latest frame data to GPU
     if (latestFrameData) {
         renderer.updateParticleData(
@@ -146,7 +132,25 @@ function renderLoop(timestamp) {
     updateBoatControls();
 
     // Render WebGL
+    const renderStart = performance.now();
     renderer.render(dt);
+    const renderTime = performance.now() - renderStart;
+
+    // FPS counter
+    frameCount++;
+    if (timestamp - lastFpsTime >= 1000) {
+        currentFps = frameCount;
+        frameCount = 0;
+        lastFpsTime = timestamp;
+
+        const pc = latestFrameData ? latestFrameData.particleCount : 0;
+        const fc = latestFrameData ? latestFrameData.foamCount : 0;
+        const sf = latestFrameData ? latestFrameData.simFps : 0;
+        const st = latestFrameData ? latestFrameData.simTime : 0;
+        const mw = latestFrameData ? latestFrameData.multiWorker : false;
+        const wc = latestFrameData ? latestFrameData.workerCount : 0;
+        ui.updateStats(currentFps, pc, fc, sf, mw, wc, st, renderTime);
+    }
 
     // Pass rigid body and boat data to tool manager for overlay
     if (latestFrameData) {
@@ -155,7 +159,7 @@ function renderLoop(timestamp) {
         toolManager.boatData = latestFrameData.boat ?? null;
     }
     // Render overlay (tools, cursors, objects)
-    toolManager.renderOverlay();
+    toolManager.renderOverlay(dt);
 }
 
 requestAnimationFrame(renderLoop);
@@ -171,6 +175,29 @@ function sendBoatKeys() {
 }
 window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    
+    // Pause / Options menu toggle with Space
+    if (e.code === 'Space') {
+        const optionsMenu = document.getElementById('options-menu');
+        const mainMenu = document.getElementById('main-menu');
+        
+        // Only toggle if we're not in the main menu
+        if (mainMenu.classList.contains('hidden')) {
+            const isHidden = optionsMenu.classList.contains('hidden');
+            if (isHidden) {
+                optionsMenu.classList.remove('hidden');
+                worker.postMessage({ type: 'pause' });
+                toolManager.gamePaused = true;
+            } else {
+                optionsMenu.classList.add('hidden');
+                worker.postMessage({ type: 'resume' });
+                toolManager.gamePaused = false;
+            }
+        }
+        e.preventDefault();
+        return;
+    }
+
     const k = e.key.toLowerCase();
     let changed = false;
     if (k === 'z') { changed = !boatKeysState.up; boatKeysState.up = true; }
