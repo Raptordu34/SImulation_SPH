@@ -562,19 +562,4 @@ void main() {
 }
 `;
 
-// ---- Combined shader for density and thickness ----
-export const fluidDataFragmentShader = `#version 300 es
-precision highp float;
-in vec2 v_uv;
-out vec4 fragColor;
 
-void main() {
-    float dist = length(v_uv);
-    if (dist > 1.0) discard;
-
-    float density = exp(-dist * dist * 3.0);
-    float thickness = exp(-dist * dist * 2.5);
-    
-    // R = Density, G = Thickness
-    fragColor = vec4(density, thickness, 0.0, 1.0);
-}`;

@@ -586,17 +586,17 @@ export class Renderer {
         // Blur shadow (2 passes)
         const softness = this.settings.shadowSoftness;
         this._blurPass(this.shadowFBO, this.shadowBlurFBO,
-            this.shadowBlurShader, softness / this.width, 0);
+            this.shadowBlurShader, softness / 512, 0, 512, 512);
         this._blurPass(this.shadowBlurFBO, this.shadowFBO,
-            this.shadowBlurShader, 0, softness / this.height);
+            this.shadowBlurShader, 0, softness / 512, 512, 512);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
-    _blurPass(srcFBO, dstFBO, shader, dirX, dirY) {
+    _blurPass(srcFBO, dstFBO, shader, dirX, dirY, vW = this.width, vH = this.height) {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, dstFBO.fbo);
-        gl.viewport(0, 0, this.width, this.height);
+        gl.viewport(0, 0, vW, vH);
 
         gl.useProgram(shader.program);
         gl.activeTexture(gl.TEXTURE0);
@@ -767,6 +767,7 @@ export class Renderer {
         gl.bindTexture(gl.TEXTURE_2D, this.bloomExtractFBO.texture);
         gl.uniform1i(this.bloomBlurShader.uniforms.u_tex, 0);
         gl.uniform2f(this.bloomBlurShader.uniforms.u_direction, 2.0 / bw, 0);
+        gl.bindVertexArray(this.fsVAO);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         // Blur vertical
@@ -774,6 +775,7 @@ export class Renderer {
         gl.viewport(0, 0, bw, bh);
         gl.bindTexture(gl.TEXTURE_2D, this.bloomBlurFBO.texture);
         gl.uniform2f(this.bloomBlurShader.uniforms.u_direction, 0, 2.0 / bh);
+        gl.bindVertexArray(this.fsVAO);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         // Composite bloom onto screen
@@ -846,27 +848,5 @@ export class Renderer {
         gl.disable(gl.BLEND);
     }
 
-    _renderFluidData() {
-        const gl = this.gl;
-        const shader = this.fluidDataShader;
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.fluidDataFBO.fbo);
-        gl.viewport(0, 0, this.fluidDataFBO.width, this.fluidDataFBO.height);
-        gl.clearColor(0, 0, 0, 0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-
-        gl.useProgram(shader.program);
-        gl.uniform2f(shader.uniforms.u_resolution, this.fluidDataFBO.width, this.fluidDataFBO.height);
-        gl.uniform1f(shader.uniforms.u_particleSize, this.settings.particleSize);
-
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE);
-
-        gl.bindVertexArray(this.particleVAO);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.particleCount);
-        gl.bindVertexArray(null);
-
-        gl.disable(gl.BLEND);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    }
 }

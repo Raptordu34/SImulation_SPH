@@ -406,7 +406,7 @@ export class UI {
         });
     }
 
-    updateStats(fps, particleCount, foamCount, simFps, multiWorker, workerCount) {
+    updateStats(fps, particleCount, foamCount, simFps, multiWorker, workerCount, simTime, renderTime) {
         this.params.fps = fps;
         this.params.simFps = simFps;
         this.params.particleCount = particleCount;

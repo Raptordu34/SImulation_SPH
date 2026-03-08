@@ -86,7 +86,7 @@ let cellHead;
 let particleNext;
 
 // Neighbor cache (single-threaded mode only)
-const MAX_NEIGHBORS = MAX_PARTICLES * 40;
+const MAX_NEIGHBORS = MAX_PARTICLES * 100;
 const neigh_i = new Int32Array(MAX_NEIGHBORS);
 const neigh_j = new Int32Array(MAX_NEIGHBORS);
 const neigh_r = new Float32Array(MAX_NEIGHBORS);
@@ -251,7 +251,7 @@ function initSubWorkers() {
     const sliceSize = Math.ceil(MAX_PARTICLES / numSubWorkers);
 
     for (let w = 0; w < numSubWorkers; w++) {
-        const worker = new Worker('sub-worker.js');
+        const worker = new Worker('js/sub-worker.js');
         worker.onmessage = function(e) {
             if (e.data.type === 'ready') {
                 subWorkersReady++;

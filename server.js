@@ -15,7 +15,15 @@ const MIME = {
 };
 
 const server = http.createServer((req, res) => {
-    let filePath = path.join(__dirname, req.url === '/' ? 'index.html' : req.url);
+    const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    let pathname = parsedUrl.pathname === '/' ? '/index.html' : parsedUrl.pathname;
+    let filePath = path.join(__dirname, pathname);
+
+    if (!filePath.startsWith(__dirname)) {
+        res.writeHead(403);
+        res.end('Forbidden');
+        return;
+    }
     const ext = path.extname(filePath);
 
     // En-têtes requis pour SharedArrayBuffer (multithreading)

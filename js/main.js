@@ -170,9 +170,6 @@ requestAnimationFrame(renderLoop);
 const boatKeysState = { up: false, left: false, down: false, right: false, throttle: 0 };
 let keyboardThrottle = 0; // Throttle progressif au clavier (0..1)
 
-function sendBoatKeys() {
-    worker.postMessage({ type: 'boatKeys', ...boatKeysState });
-}
 window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     
@@ -199,22 +196,18 @@ window.addEventListener('keydown', (e) => {
     }
 
     const k = e.key.toLowerCase();
-    let changed = false;
-    if (k === 'z') { changed = !boatKeysState.up; boatKeysState.up = true; }
-    if (k === 'q') { changed = !boatKeysState.left; boatKeysState.left = true; }
-    if (k === 's') { changed = !boatKeysState.down; boatKeysState.down = true; }
-    if (k === 'd') { changed = !boatKeysState.right; boatKeysState.right = true; }
-    if (changed && (k === 'z' || k === 'q' || k === 's' || k === 'd')) sendBoatKeys();
+    if (k === 'z') { boatKeysState.up = true; }
+    if (k === 'q') { boatKeysState.left = true; }
+    if (k === 's') { boatKeysState.down = true; }
+    if (k === 'd') { boatKeysState.right = true; }
 });
 window.addEventListener('keyup', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     const k = e.key.toLowerCase();
-    let changed = false;
-    if (k === 'z') { changed = boatKeysState.up; boatKeysState.up = false; }
-    if (k === 'q') { changed = boatKeysState.left; boatKeysState.left = false; }
-    if (k === 's') { changed = boatKeysState.down; boatKeysState.down = false; }
-    if (k === 'd') { changed = boatKeysState.right; boatKeysState.right = false; }
-    if (changed) sendBoatKeys();
+    if (k === 'z') { boatKeysState.up = false; }
+    if (k === 'q') { boatKeysState.left = false; }
+    if (k === 's') { boatKeysState.down = false; }
+    if (k === 'd') { boatKeysState.right = false; }
 });
 
 // ==========================================
@@ -291,14 +284,33 @@ function updateBoatControls() {
     // 3. Combiner clavier + manette
     const combinedThrottle = Math.min(Math.max(gpThrottle, keyboardThrottle), 1.0);
 
-    worker.postMessage({
-        type: 'boatKeys',
-        up: boatKeysState.up || gpThrottle > 0.05,
-        down: boatKeysState.down || gpReverse,
-        left: boatKeysState.left || gpLeft,
-        right: boatKeysState.right || gpRight,
-        throttle: combinedThrottle
-    });
+    const up = boatKeysState.up || gpThrottle > 0.05;
+    const down = boatKeysState.down || gpReverse;
+    const left = boatKeysState.left || gpLeft;
+    const right = boatKeysState.right || gpRight;
+
+    if (
+        boatKeysState.lastUp !== up ||
+        boatKeysState.lastDown !== down ||
+        boatKeysState.lastLeft !== left ||
+        boatKeysState.lastRight !== right ||
+        boatKeysState.lastThrottle !== combinedThrottle
+    ) {
+        boatKeysState.lastUp = up;
+        boatKeysState.lastDown = down;
+        boatKeysState.lastLeft = left;
+        boatKeysState.lastRight = right;
+        boatKeysState.lastThrottle = combinedThrottle;
+        
+        worker.postMessage({
+            type: 'boatKeys',
+            up: up,
+            down: down,
+            left: left,
+            right: right,
+            throttle: combinedThrottle
+        });
+    }
 }
 
 // ==========================================
