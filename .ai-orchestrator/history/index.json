@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "workflowId": "workflow-mmi2xh85-3-rEsHE-",
+      "branchId": "main",
+      "label": "Explore the repository and identify reusable patterns.",
+      "createdAt": "2026-03-08T18:22:13.877Z",
+      "updatedAt": "2026-03-08T18:22:13.877Z",
+      "currentStageIndex": 1,
+      "stageCount": 1,
+      "currentPreset": "explore",
+      "currentProvider": "gemini",
+      "briefSummary": "Explore the repository and identify reusable patterns.",
+      "manifestPath": ".ai-orchestrator/history/workflow-mmi2xh85-3-rEsHE-/manifest.json",
+      "latestStageFile": ".ai-orchestrator/stages/01-explore.md"
+    }
+  ],
+  "activeWorkflowId": "workflow-mmi2xh85-3-rEsHE-"
+}
