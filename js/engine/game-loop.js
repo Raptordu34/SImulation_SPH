@@ -3,11 +3,14 @@ import EventBus from '../core/event-bus.js'
 export class GameLoop {
   #worker
   #renderer
+  #overlayCtx = null
   #toolManager
   #ui
   #inputManager
   #hud = null
   #enemyManager = null
+  #combatSystem = null
+  #waveManager = null
   #currentState = 'MENU'
   #paused = false
   #lastRenderTime = 0
@@ -18,9 +21,10 @@ export class GameLoop {
   // Latest frame data from worker — exposed so other systems can read it
   latestFrameData = null
 
-  constructor(worker, renderer, toolManager, ui, inputManager) {
+  constructor(worker, renderer, overlayCanvas, toolManager, ui, inputManager) {
     this.#worker = worker
     this.#renderer = renderer
+    this.#overlayCtx = overlayCanvas.getContext('2d')
     this.#toolManager = toolManager
     this.#ui = ui
     this.#inputManager = inputManager
@@ -109,10 +113,13 @@ export class GameLoop {
     }
     this.#toolManager.renderOverlay(dt)
     if (this.#hud) this.#hud.render(dt)
+    this.#combatSystem?.renderProjectiles(this.#overlayCtx)
 
-    // Update enemy manager when playing
+    // Update enemy manager, combat, and wave systems when playing
     if (this.#currentState === 'PLAYING') {
       this.#enemyManager?.update(dt, fd)
+      this.#combatSystem?.update(dt, fd)
+      this.#waveManager?.update(dt)
     }
 
     // Emit update event for game systems (enemies, combat, etc.)
@@ -121,6 +128,8 @@ export class GameLoop {
 
   setHUD(hud) { this.#hud = hud }
   setEnemyManager(em) { this.#enemyManager = em }
+  setCombatSystem(cs) { this.#combatSystem = cs }
+  setWaveManager(wm) { this.#waveManager = wm }
 
   start() {
     this.#lastFpsTime = performance.now()

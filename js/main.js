@@ -10,6 +10,8 @@ import { GameState, States } from './game/game-state.js'
 import { MainMenu } from './ui/main-menu.js'
 import { Player } from './game/player.js'
 import { EnemyManager } from './game/enemy-manager.js'
+import { WaveManager } from './game/wave-manager.js'
+import { CombatSystem } from './game/combat-system.js'
 
 const container = document.getElementById('canvas-container')
 const simCanvas = document.getElementById('simCanvas')
@@ -39,7 +41,7 @@ const toolManager = new ToolManager(worker, overlayCanvas)
 const recorder = new Recorder(simCanvas)
 const ui = new UI(worker, renderer, toolManager, recorder)
 const inputManager = new InputManager(worker)
-const gameLoop = new GameLoop(worker, renderer, toolManager, ui, inputManager)
+const gameLoop = new GameLoop(worker, renderer, overlayCanvas, toolManager, ui, inputManager)
 
 const gameState = new GameState()
 const mainMenu = new MainMenu(gameState)
@@ -48,7 +50,12 @@ gameLoop.setHUD(hud)
 
 const player = new Player()
 const enemyManager = new EnemyManager(worker, hud)
+const waveManager = new WaveManager(enemyManager)
+const combatSystem = new CombatSystem(player, enemyManager)
+waveManager.setCanvasSize(width, height)
 gameLoop.setEnemyManager(enemyManager)
+gameLoop.setWaveManager(waveManager)
+gameLoop.setCombatSystem(combatSystem)
 
 EventBus.on('enemy:died', ({ xpReward }) => {
   player.gainXP(xpReward)
@@ -73,6 +80,9 @@ EventBus.on('game:start', () => {
   player.reset()
   enemyManager.reset()
   hud.reset()
+  waveManager.reset()
+  combatSystem.reset()
+  waveManager.start()
   gameState.start()
   // Ensure options overlay is hidden
   document.getElementById('options-overlay').classList.add('hidden')
