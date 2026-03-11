@@ -113,10 +113,10 @@ export class GameLoop {
     }
     this.#toolManager.renderOverlay(dt)
     if (this.#hud) this.#hud.render(dt)
-    this.#combatSystem?.renderProjectiles(this.#overlayCtx)
 
     // Update enemy manager, combat, and wave systems when playing
     if (this.#currentState === 'PLAYING') {
+      this.#combatSystem?.renderProjectiles(this.#overlayCtx)
       this.#enemyManager?.update(dt, fd)
       this.#combatSystem?.update(dt, fd)
       this.#waveManager?.update(dt)

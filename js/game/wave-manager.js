@@ -8,6 +8,7 @@ export class WaveManager {
   #canvasWidth = 800
   #canvasHeight = 600
   #waveComplete = false
+  #nextWaveTimer = null
 
   constructor(enemyManager) {
     this.#enemyManager = enemyManager
@@ -24,12 +25,14 @@ export class WaveManager {
   }
 
   reset() {
+    clearTimeout(this.#nextWaveTimer); this.#nextWaveTimer = null
     this.currentWave = 0
     this.#spawnTimers = []
     this.#waveComplete = false
   }
 
   #nextWave() {
+    this.#nextWaveTimer = null
     this.currentWave++
     const config = getWaveConfig(this.currentWave)
     EventBus.emit('wave:started', { wave: this.currentWave })
@@ -73,7 +76,7 @@ export class WaveManager {
     if (allSpawned && this.#enemyManager.enemies.size === 0 && !this.#waveComplete) {
       this.#waveComplete = true
       // Short delay before next wave
-      setTimeout(() => this.#nextWave(), 3000)
+      this.#nextWaveTimer = setTimeout(() => this.#nextWave(), 3000)
     }
   }
 

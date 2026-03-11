@@ -96,6 +96,7 @@ window.addEventListener('resize', () => {
     const size = getSize()
     width = size.width; height = size.height
     overlayCanvas.width = width; overlayCanvas.height = height
+    waveManager.setCanvasSize(width, height)
     renderer.resize(width, height)
     worker.postMessage({ type: 'resize', width, height })
   }, 100)
