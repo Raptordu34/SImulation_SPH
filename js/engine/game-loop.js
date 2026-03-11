@@ -7,6 +7,8 @@ export class GameLoop {
   #ui
   #inputManager
   #hud = null
+  #enemyManager = null
+  #currentState = 'MENU'
   #paused = false
   #lastRenderTime = 0
   #frameCount = 0
@@ -31,6 +33,7 @@ export class GameLoop {
       // The SPH simulation always runs. GameLoop only pauses game logic.
       // Rendering always continues (water visible behind menu).
       // We only gate inputManager calls on state.
+      this.#currentState = state
     })
   }
 
@@ -107,11 +110,17 @@ export class GameLoop {
     this.#toolManager.renderOverlay(dt)
     if (this.#hud) this.#hud.render(dt)
 
+    // Update enemy manager when playing
+    if (this.#currentState === 'PLAYING') {
+      this.#enemyManager?.update(dt, fd)
+    }
+
     // Emit update event for game systems (enemies, combat, etc.)
     EventBus.emit('engine:update', { dt, frameData: fd })
   }
 
   setHUD(hud) { this.#hud = hud }
+  setEnemyManager(em) { this.#enemyManager = em }
 
   start() {
     this.#lastFpsTime = performance.now()

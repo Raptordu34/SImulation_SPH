@@ -8,6 +8,8 @@ import { InputManager } from './engine/input-manager.js'
 import EventBus from './core/event-bus.js'
 import { GameState, States } from './game/game-state.js'
 import { MainMenu } from './ui/main-menu.js'
+import { Player } from './game/player.js'
+import { EnemyManager } from './game/enemy-manager.js'
 
 const container = document.getElementById('canvas-container')
 const simCanvas = document.getElementById('simCanvas')
@@ -44,6 +46,16 @@ const mainMenu = new MainMenu(gameState)
 const hud = new HUD(overlayCanvas, gameState)
 gameLoop.setHUD(hud)
 
+const player = new Player()
+const enemyManager = new EnemyManager(worker, hud)
+gameLoop.setEnemyManager(enemyManager)
+
+EventBus.on('enemy:died', ({ xpReward }) => {
+  player.gainXP(xpReward)
+  player.score += xpReward * 10
+  hud.updateScore(player.score)
+})
+
 // Wire Escape: toggle options when PLAYING/PAUSED, ignore in MENU/LEVELUP/GAMEOVER
 EventBus.on('input:escape', () => {
   const state = gameState.current
@@ -58,6 +70,9 @@ EventBus.on('input:escape', () => {
 
 // Wire game:start (fired by MainMenu button click)
 EventBus.on('game:start', () => {
+  player.reset()
+  enemyManager.reset()
+  hud.reset()
   gameState.start()
   // Ensure options overlay is hidden
   document.getElementById('options-overlay').classList.add('hidden')
