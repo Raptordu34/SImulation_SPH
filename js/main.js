@@ -5,6 +5,8 @@ import { UI } from './ui.js'
 import { GameLoop } from './engine/game-loop.js'
 import { InputManager } from './engine/input-manager.js'
 import EventBus from './core/event-bus.js'
+import { GameState, States } from './game/game-state.js'
+import { MainMenu } from './ui/main-menu.js'
 
 const container = document.getElementById('canvas-container')
 const simCanvas = document.getElementById('simCanvas')
@@ -36,10 +38,26 @@ const ui = new UI(worker, renderer, toolManager, recorder)
 const inputManager = new InputManager(worker)
 const gameLoop = new GameLoop(worker, renderer, toolManager, ui, inputManager)
 
-// Escape key: toggle options overlay (wired to input:escape event)
+const gameState = new GameState()
+const mainMenu = new MainMenu(gameState)
+
+// Wire Escape: toggle options when PLAYING/PAUSED, ignore in MENU/LEVELUP/GAMEOVER
 EventBus.on('input:escape', () => {
-  const overlay = document.getElementById('options-overlay')
-  overlay.classList.toggle('hidden')
+  const state = gameState.current
+  if (state === States.PLAYING) {
+    gameState.pause()
+    document.getElementById('options-overlay').classList.remove('hidden')
+  } else if (state === States.PAUSED) {
+    gameState.resume()
+    document.getElementById('options-overlay').classList.add('hidden')
+  }
+})
+
+// Wire game:start (fired by MainMenu button click)
+EventBus.on('game:start', () => {
+  gameState.start()
+  // Ensure options overlay is hidden
+  document.getElementById('options-overlay').classList.add('hidden')
 })
 
 // Resize
