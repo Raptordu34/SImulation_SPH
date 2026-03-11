@@ -6,6 +6,7 @@ export class GameLoop {
   #toolManager
   #ui
   #inputManager
+  #hud = null
   #paused = false
   #lastRenderTime = 0
   #frameCount = 0
@@ -104,10 +105,13 @@ export class GameLoop {
       this.#toolManager.boatData = fd.boat ?? null
     }
     this.#toolManager.renderOverlay(dt)
+    if (this.#hud) this.#hud.render(dt)
 
     // Emit update event for game systems (enemies, combat, etc.)
     EventBus.emit('engine:update', { dt, frameData: fd })
   }
+
+  setHUD(hud) { this.#hud = hud }
 
   start() {
     this.#lastFpsTime = performance.now()

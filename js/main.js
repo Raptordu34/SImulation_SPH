@@ -1,7 +1,8 @@
 import { Renderer } from './core/renderer.js'
 import { ToolManager } from './tools.js'
 import { Recorder } from './engine/recorder.js'
-import { UI } from './ui.js'
+import { UI } from './ui/options.js'
+import { HUD } from './ui/hud.js'
 import { GameLoop } from './engine/game-loop.js'
 import { InputManager } from './engine/input-manager.js'
 import EventBus from './core/event-bus.js'
@@ -40,6 +41,8 @@ const gameLoop = new GameLoop(worker, renderer, toolManager, ui, inputManager)
 
 const gameState = new GameState()
 const mainMenu = new MainMenu(gameState)
+const hud = new HUD(overlayCanvas, gameState)
+gameLoop.setHUD(hud)
 
 // Wire Escape: toggle options when PLAYING/PAUSED, ignore in MENU/LEVELUP/GAMEOVER
 EventBus.on('input:escape', () => {
