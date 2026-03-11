@@ -150,6 +150,7 @@ const transferRigidBodies = new Float32Array(MAX_RIGID_BODIES * MAX_RB_FLOATS);
 // Bateau joueur (vue dessus, 0G quand placé)
 let boat = null;
 let boatKeys = { up: false, left: false, down: false, right: false, throttle: 0 };
+let enemyBoats = [];
 let gravityStored = null;
 const BOAT_THRUST = 1150;
 const BOAT_DRAG = 0.985;
@@ -1009,6 +1010,160 @@ function integrateBoat() {
 }
 
 // ==========================================
+// ENEMY BOAT — FLUID COUPLING (same as player boat)
+// ==========================================
+function applyBoatForces_eb(eb) {
+    eb.fx = 0;
+    eb.fy = 0;
+    eb.torqueFromWater = 0;
+
+    const pseudoBody = { x: eb.x, y: eb.y, angle: eb.angle, halfW: BOAT_HALF_W, halfH: BOAT_HALF_H };
+    const cosA = Math.cos(eb.angle), sinA = Math.sin(eb.angle);
+    const boatR = Math.sqrt(BOAT_HALF_W * BOAT_HALF_W + BOAT_HALF_H * BOAT_HALF_H) + PARTICLE_RADIUS + 5;
+
+    const boatSpeed = Math.sqrt(eb.vx * eb.vx + eb.vy * eb.vy);
+    const speedFactor = Math.min(boatSpeed / 850, 1.0);
+
+    const baseMotorForce = 15000;
+    const dynamicMotorForce = baseMotorForce + (baseMotorForce * 2.5 * speedFactor);
+    const stern = -BOAT_HALF_W - BOAT_MOTOR_BACK_OFFSET;
+
+    let waterVxSum = 0, waterVySum = 0;
+    let waterWeightSum = 0;
+    const currentDetectRadius = boatR + 60;
+    const currentDetectR2 = currentDetectRadius * currentDetectRadius;
+
+    let resistFx = 0, resistFy = 0;
+
+    for (let i = 0; i < particleCount; i++) {
+        if (p_frozen[i]) continue;
+        const px = p_x[i], py = p_y[i];
+        const ddx = px - eb.x, ddy = py - eb.y;
+        const dist2 = ddx * ddx + ddy * ddy;
+
+        if (dist2 > (boatR + 150) * (boatR + 150)) continue;
+
+        if (dist2 < currentDetectR2) {
+            const w = 1.0 - Math.sqrt(dist2) / currentDetectRadius;
+            waterVxSum += p_vx[i] * w;
+            waterVySum += p_vy[i] * w;
+            waterWeightSum += w;
+
+            const relVx = p_vx[i] - eb.vx;
+            const relVy = p_vy[i] - eb.vy;
+            const clx = ddx * Math.cos(-eb.angle) - ddy * Math.sin(-eb.angle);
+            const pLocalVy = -relVx * sinA + relVy * cosA;
+            eb.torqueFromWater += clx * pLocalVy * BOAT_WAVE_TORQUE_FACTOR * w;
+        }
+
+        if (dist2 <= boatR * boatR) {
+            const col = collideParticleBox(px, py, pseudoBody);
+            if (col) {
+                const localX = ddx * cosA + ddy * sinA;
+                const prowFactor = localX > 0 ? BOAT_PROW_PUSH_FACTOR : 1.0;
+
+                const forceMag = col.dist * BOAT_COLLISION_STIFFNESS * prowFactor;
+                p_fx[i] += col.nx * forceMag;
+                p_fy[i] += col.ny * forceMag;
+
+                if (boatSpeed > 30) {
+                    const pushStrength = boatSpeed * 0.3 * prowFactor;
+                    p_vx[i] += col.nx * pushStrength;
+                    p_vy[i] += col.ny * pushStrength;
+                }
+
+                resistFx -= col.nx * col.dist * BOAT_COLLISION_STIFFNESS * BOAT_WATER_RESISTANCE;
+                resistFy -= col.ny * col.dist * BOAT_COLLISION_STIFFNESS * BOAT_WATER_RESISTANCE;
+            }
+        }
+
+        const lx = ddx * Math.cos(-eb.angle) - ddy * Math.sin(-eb.angle);
+        const ly = ddx * Math.sin(-eb.angle) + ddy * Math.cos(-eb.angle);
+
+        const wakeLength = BOAT_MOTOR_DEPTH + (120 * speedFactor);
+        const wakeWidth = BOAT_MOTOR_WIDTH + (30 * speedFactor);
+        const behind = lx < stern && lx > stern - wakeLength && Math.abs(ly) < wakeWidth;
+
+        const ebThrottle = eb.thrust !== undefined ? eb.thrust : 0;
+        if (behind && (ebThrottle > 0 || boatSpeed > 50)) {
+            const throttleScale = ebThrottle > 0 ? ebThrottle : (boatSpeed > 50 ? speedFactor * 0.5 : 0);
+
+            p_fx[i] -= cosA * dynamicMotorForce * throttleScale;
+            p_fy[i] -= sinA * dynamicMotorForce * throttleScale;
+        }
+    }
+
+    const resistMag = Math.sqrt(resistFx * resistFx + resistFy * resistFy);
+    if (resistMag > BOAT_MAX_WATER_FORCE) {
+        const scale = BOAT_MAX_WATER_FORCE / resistMag;
+        resistFx *= scale;
+        resistFy *= scale;
+    }
+    eb.fx += resistFx;
+    eb.fy += resistFy;
+
+    if (waterWeightSum > 0.1) {
+        const avgWaterVx = waterVxSum / waterWeightSum;
+        const avgWaterVy = waterVySum / waterWeightSum;
+        const currentScale = BOAT_WATER_CURRENT_FACTOR * Math.sqrt(waterWeightSum);
+        eb.fx += (avgWaterVx - eb.vx) * currentScale / BOAT_MASS;
+        eb.fy += (avgWaterVy - eb.vy) * currentScale / BOAT_MASS;
+    }
+}
+
+// ==========================================
+// ENEMY BOAT INTEGRATION (same logic as player)
+// ==========================================
+function integrateBoat_eb(eb) {
+    const dt = DT / SUBSTEPS;
+
+    const steerAngle = eb.steerAngle !== undefined ? eb.steerAngle : 0;
+    const thrust = eb.thrust !== undefined ? eb.thrust : 0;
+
+    const speed = Math.sqrt(eb.vx * eb.vx + eb.vy * eb.vy);
+    const speedFactor = Math.min(speed / 200, 1.0);
+
+    const actualTurn = steerAngle * (0.3 + 0.7 * speedFactor);
+    eb.angle += actualTurn * dt;
+    eb.angle += (eb.torqueFromWater || 0) * dt;
+
+    const cosA = Math.cos(eb.angle);
+    const sinA = Math.sin(eb.angle);
+
+    const ax = cosA * thrust * BOAT_THRUST + (eb.fx || 0) / BOAT_MASS;
+    const ay = sinA * thrust * BOAT_THRUST + (eb.fy || 0) / BOAT_MASS;
+
+    eb.vx += ax * dt;
+    eb.vy += ay * dt;
+
+    const forwardVel = eb.vx * cosA + eb.vy * sinA;
+    const lateralVel = eb.vx * -sinA + eb.vy * cosA;
+
+    const dampedLateral = lateralVel * 0.92;
+    const dampedForward = forwardVel * BOAT_DRAG;
+
+    eb.vx = dampedForward * cosA - dampedLateral * sinA;
+    eb.vy = dampedForward * sinA + dampedLateral * cosA;
+
+    const maxSpeed = 850;
+    const v2 = eb.vx * eb.vx + eb.vy * eb.vy;
+    if (v2 > maxSpeed * maxSpeed) {
+        const r = maxSpeed / Math.sqrt(v2);
+        eb.vx *= r;
+        eb.vy *= r;
+    }
+
+    eb.x += eb.vx * dt;
+    eb.y += eb.vy * dt;
+
+    const margin = 2;
+    if (eb.x - BOAT_HALF_W < margin) { eb.x = margin + BOAT_HALF_W; eb.vx *= -0.4; }
+    if (eb.x + BOAT_HALF_W > width - margin) { eb.x = width - margin - BOAT_HALF_W; eb.vx *= -0.4; }
+    if (eb.y - BOAT_HALF_H < margin) { eb.y = margin + BOAT_HALF_H; eb.vy *= -0.4; }
+    if (eb.y + BOAT_HALF_H > height - margin) { eb.y = height - margin - BOAT_HALF_H; eb.vy *= -0.4; }
+}
+
+// ==========================================
 // INTEGRATION
 // ==========================================
 function integrate() {
@@ -1484,9 +1639,15 @@ function step() {
 
     applyRigidBodyForces();
     applyBoatForces();
+    for (const eb of enemyBoats) {
+        applyBoatForces_eb(eb);
+    }
     integrate();
     integrateRigidBodies();
     integrateBoat();
+    for (const eb of enemyBoats) {
+        integrateBoat_eb(eb);
+    }
     updateFoam();
     processEmitters(DT);
 }
@@ -1568,7 +1729,15 @@ function simLoop() {
         workerCount: numSubWorkers,
         rigidBodies: transferRigidBodies.subarray(0, rbCount * MAX_RB_FLOATS),
         rigidBodyCount: rbCount,
-        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null
+        boat: boat ? { x: boat.x, y: boat.y, angle: boat.angle } : null,
+        enemyBoats: enemyBoats.map(eb => ({
+            id: eb.id,
+            x: eb.x,
+            y: eb.y,
+            angle: eb.angle,
+            vx: eb.vx,
+            vy: eb.vy
+        }))
     });
 
     setTimeout(simLoop, 4);
@@ -1701,6 +1870,7 @@ self.onmessage = function(e) {
             explosions = [];
             portals = [];
             rigidBodies = [];
+            enemyBoats = [];
             if (boat) {
                 boat = null;
                 if (gravityStored != null) {
@@ -1874,6 +2044,41 @@ self.onmessage = function(e) {
             boatKeys.right = !!msg.right;
             boatKeys.throttle = msg.throttle !== undefined ? msg.throttle : (msg.up ? 1 : 0);
             break;
+
+        case 'addEnemyBoat': {
+            const eb = {
+                id: msg.id,
+                x: msg.x !== undefined ? msg.x : width / 2,
+                y: msg.y !== undefined ? msg.y : height / 2,
+                vx: 0, vy: 0,
+                angle: 0,
+                fx: 0, fy: 0,
+                torqueFromWater: 0,
+                thrust: 0,
+                steerAngle: 0
+            };
+            enemyBoats.push(eb);
+            break;
+        }
+
+        case 'removeEnemyBoat': {
+            const idx = enemyBoats.findIndex(b => b.id === msg.id);
+            if (idx !== -1) enemyBoats.splice(idx, 1);
+            break;
+        }
+
+        case 'updateEnemyBoats': {
+            if (msg.commands) {
+                for (const cmd of msg.commands) {
+                    const eb = enemyBoats.find(b => b.id === cmd.id);
+                    if (eb) {
+                        eb.thrust = cmd.thrust !== undefined ? cmd.thrust : eb.thrust;
+                        if (cmd.steerAngle !== undefined) eb.steerAngle = cmd.steerAngle;
+                    }
+                }
+            }
+            break;
+        }
 
         case 'getState':
             self.postMessage({
