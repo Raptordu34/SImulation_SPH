@@ -207,7 +207,7 @@ export class Renderer {
 
         // Instance buffers (dynamic) - pre-allocate at max size
         const MAX_PARTICLES = 10000;
-        const MAX_FOAM = 2000;
+        const MAX_FOAM = 8000;
 
         this.positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
@@ -806,7 +806,8 @@ export class Renderer {
         gl.uniform1f(shader.uniforms.u_foamSize, this.settings.foamSize);
 
         gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        // Use additive blending for foam so it accumulates brightness
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
         gl.bindVertexArray(this.foamVAO);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.foamCount);

@@ -358,26 +358,48 @@ in float v_size;
 
 out vec4 fragColor;
 
+// Pseudo-random function
+float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
+// Simple noise function
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+               mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
 void main() {
     float dist = length(v_uv);
     if (dist > 1.0) discard;
 
     float alpha;
     vec3 color;
+    
+    // Add noise based on local fragment position
+    float n = noise(v_uv * 4.0 + v_size * 10.0);
+    float noiseEdge = smoothstep(0.4, 0.6, n);
 
     if (v_size > 1.3) {
-        // Splash: larger, more opaque, slight blue tint
-        alpha = (1.0 - dist * dist) * v_life * 0.8;
-        color = vec3(0.85, 0.92, 1.0);
+        // Splash: larger, more opaque, slight blue tint, some volume
+        float volume = sqrt(max(0.0, 1.0 - dist * dist));
+        alpha = (volume * 0.7 + noiseEdge * 0.3) * v_life * 0.9;
+        color = vec3(0.9, 0.95, 1.0) * (0.8 + 0.2 * volume); // Shading
     } else if (v_size < 0.6) {
-        // Bubble: ring shape
-        float ring = smoothstep(0.6, 0.75, dist) * (1.0 - smoothstep(0.85, 1.0, dist));
+        // Bubble: ring shape with some distortion
+        float distortedDist = dist + (n - 0.5) * 0.2;
+        float ring = smoothstep(0.6, 0.75, distortedDist) * (1.0 - smoothstep(0.85, 1.0, distortedDist));
         float fill = (1.0 - dist * dist) * 0.15;
-        alpha = (ring * 0.6 + fill) * v_life;
+        alpha = (ring * 0.8 + fill) * v_life;
         color = vec3(0.9, 0.95, 1.0);
     } else {
-        // Normal spray
-        alpha = (1.0 - dist * dist) * v_life * 0.7;
+        // Surface/Normal spray: connected structures
+        alpha = (1.0 - dist * dist) * (0.5 + 0.5 * noiseEdge) * v_life * 0.9;
         color = vec3(1.0, 1.0, 1.0);
     }
 

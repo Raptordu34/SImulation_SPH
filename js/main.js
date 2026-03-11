@@ -171,24 +171,14 @@ requestAnimationFrame(renderLoop);
 // ==========================================
 window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    
-    // Pause / Options menu toggle with Space
-    if (e.code === 'Space') {
-        const optionsMenu = document.getElementById('options-menu');
-        const mainMenu = document.getElementById('main-menu');
-        
-        // Only toggle if we're not in the main menu
-        if (mainMenu.classList.contains('hidden')) {
-            const isHidden = optionsMenu.classList.contains('hidden');
-            if (isHidden) {
-                optionsMenu.classList.remove('hidden');
-                worker.postMessage({ type: 'pause' });
-                toolManager.gamePaused = true;
-            } else {
-                optionsMenu.classList.add('hidden');
-                worker.postMessage({ type: 'resume' });
-                toolManager.gamePaused = false;
-            }
+
+    // Options overlay toggle with Escape
+    if (e.code === 'Escape') {
+        const overlay = document.getElementById('options-overlay');
+        if (overlay.classList.contains('hidden')) {
+            overlay.classList.remove('hidden');
+        } else {
+            overlay.classList.add('hidden');
         }
         e.preventDefault();
     }

@@ -4,7 +4,7 @@
 // ==========================================
 
 const MAX_PARTICLES = 10000;
-const MAX_FOAM = 2000;
+const MAX_FOAM = 8000;
 const H = 35;
 const H2 = H * H;
 const PARTICLE_RADIUS = 9;
@@ -15,11 +15,11 @@ const WALL_STIFFNESS = 5000;
 const MOUSE_RADIUS = 45;
 
 // Dynamic physics parameters
-let GAS_CONST = 3000;
-let NEAR_GAS_CONST = 5000;
-let SURFACE_TENSION = 1000;
+let GAS_CONST = 6000;
+let NEAR_GAS_CONST = 15000;
+let SURFACE_TENSION = 1500;
 let VISC = 5;
-let GRAVITY_Y = 1200;
+let GRAVITY_Y = 0;
 let GRAVITY_X = 0;
 
 let width = 800, height = 600;
@@ -100,6 +100,23 @@ const transferVel = new Float32Array(MAX_PARTICLES * 2);
 const transferFoamPos = new Float32Array(MAX_FOAM * 2);
 const transferFoamLife = new Float32Array(MAX_FOAM);
 const transferFoamSize = new Float32Array(MAX_FOAM);
+
+// COUNTING SORT — buffers temporaires alloués une seule fois (pas de GC par frame)
+const sort_cellIDs      = new Int32Array(MAX_PARTICLES);
+const sort_count        = new Int32Array(MAX_GRID_CELLS);
+const sort_prefix       = new Int32Array(MAX_GRID_CELLS);
+const sort_x            = new Float32Array(MAX_PARTICLES);
+const sort_y            = new Float32Array(MAX_PARTICLES);
+const sort_vx           = new Float32Array(MAX_PARTICLES);
+const sort_vy           = new Float32Array(MAX_PARTICLES);
+const sort_fx           = new Float32Array(MAX_PARTICLES);
+const sort_fy           = new Float32Array(MAX_PARTICLES);
+const sort_density      = new Float32Array(MAX_PARTICLES);
+const sort_nearDensity  = new Float32Array(MAX_PARTICLES);
+const sort_pressure     = new Float32Array(MAX_PARTICLES);
+const sort_nearPressure = new Float32Array(MAX_PARTICLES);
+const sort_frozen       = new Uint8Array(MAX_PARTICLES);
+const sort_teleportCD   = new Float32Array(MAX_PARTICLES);
 
 // Sim FPS tracking
 let simFrameCount = 0;
@@ -884,7 +901,7 @@ function applyBoatForces() {
 
             // --- 6. Feedback Visuel : Mousse ---
             const effectiveSpeedFactor = Math.max(speedFactor, boatKeys.throttle);
-            const foamThreshold = 0.96 - (0.45 * effectiveSpeedFactor);
+            const foamThreshold = 0.90 - (0.55 * effectiveSpeedFactor);
             if (xorshift() > foamThreshold && foamCount < MAX_FOAM) {
                 foam_x[foamCount] = px;
                 foam_y[foamCount] = py;
@@ -1158,20 +1175,33 @@ function integrate() {
             }
         }
 
-        // Foam from high acceleration (splashing)
-        const accel2 = p_fx[i] * p_fx[i] + p_fy[i] * p_fy[i];
-        if (accel2 > 800000 && foamCount < MAX_FOAM && xorshift() > 0.85) {
-            foam_x[foamCount] = p_x[i];
-            foam_y[foamCount] = p_y[i];
-            foam_vx[foamCount] = p_vx[i] * 0.3 + (xorshift() - 0.5) * 150;
-            foam_vy[foamCount] = p_vy[i] * 0.3 - xorshift() * 200;
-            foam_life[foamCount] = 0.5 + xorshift() * 0.5;
-            // Size variation: small = bubble, medium = spray, large = splash
-            const sizeRand = xorshift();
-            if (sizeRand < 0.3) foam_size[foamCount] = 0.3 + xorshift() * 0.3; // bubble
-            else if (sizeRand < 0.7) foam_size[foamCount] = 0.7 + xorshift() * 0.5; // spray
-            else foam_size[foamCount] = 1.3 + xorshift() * 0.7; // splash
-            foamCount++;
+        // Foam generation based on physical properties
+        if (foamCount < MAX_FOAM && xorshift() > 0.65) { // Increased chance from 0.85 to 0.65
+            const accel2 = p_fx[i] * p_fx[i] + p_fy[i] * p_fy[i];
+            const density = p_density[i];
+            
+            // 1. Surface Splashes & Aeration (low density, high energy)
+            if (density < REST_DENS * 0.95 && (accel2 > 400000 || v2 > 100000)) { // Lowered thresholds
+                foam_x[foamCount] = p_x[i];
+                foam_y[foamCount] = p_y[i];
+                foam_vx[foamCount] = p_vx[i] * 0.4 + (xorshift() - 0.5) * 200;
+                foam_vy[foamCount] = p_vy[i] * 0.4 - xorshift() * 250;
+                foam_life[foamCount] = 0.5 + xorshift() * 1.5; // Increased lifespan
+                // Mostly spray and splashes
+                foam_size[foamCount] = 0.8 + xorshift() * 0.8;
+                foamCount++;
+            }
+            // 2. Trapped Air / Cavitation (high pressure/density, turbulent)
+            else if (density > REST_DENS * 1.2 && v2 > 60000 && foamCount < MAX_FOAM) { // Lowered thresholds
+                foam_x[foamCount] = p_x[i];
+                foam_y[foamCount] = p_y[i];
+                foam_vx[foamCount] = p_vx[i] * 0.8 + (xorshift() - 0.5) * 100;
+                foam_vy[foamCount] = p_vy[i] * 0.8 + (xorshift() - 0.5) * 100;
+                foam_life[foamCount] = 1.0 + xorshift() * 1.5; // Increased lifespan
+                // Bubbles
+                foam_size[foamCount] = 0.3 + xorshift() * 0.3;
+                foamCount++;
+            }
         }
 
         // Teleporter portals
@@ -1226,12 +1256,80 @@ function integrate() {
 function updateFoam() {
     const dt = DT;
     for (let i = foamCount - 1; i >= 0; i--) {
-        foam_vy[i] += GRAVITY_Y * 0.3 * dt;
-        foam_vx[i] *= 0.98;
-        foam_vy[i] *= 0.98;
+        const fx = foam_x[i];
+        const fy = foam_y[i];
+        
+        // Sample local fluid
+        let fDens = 0;
+        let fvx = 0;
+        let fvy = 0;
+        let neighbors = 0;
+
+        const cx = Math.max(0, Math.min(cols - 1, (fx / H) | 0));
+        const cy = Math.max(0, Math.min(rows - 1, (fy / H) | 0));
+
+        const cxMin = cx > 0 ? cx - 1 : 0;
+        const cxMax = cx < cols - 1 ? cx + 1 : cols - 1;
+        const cyMin = cy > 0 ? cy - 1 : 0;
+        const cyMax = cy < rows - 1 ? cy + 1 : rows - 1;
+
+        for (let ny = cyMin; ny <= cyMax; ny++) {
+            for (let nx = cxMin; nx <= cxMax; nx++) {
+                let j = cellHead[nx + ny * cols];
+                while (j !== -1) {
+                    const dx = p_x[j] - fx;
+                    const dy = p_y[j] - fy;
+                    const r2 = dx * dx + dy * dy;
+                    if (r2 < H2) {
+                        const r = Math.sqrt(r2);
+                        const q = 1.0 - r / H;
+                        const weight = q * q;
+                        fDens += weight;
+                        fvx += p_vx[j] * weight;
+                        fvy += p_vy[j] * weight;
+                        neighbors += weight;
+                    }
+                    j = particleNext[j];
+                }
+            }
+        }
+
+        if (neighbors > 0) {
+            fvx /= neighbors;
+            fvy /= neighbors;
+        }
+
+        // fDens approximates local fluid density
+        const isUnderwater = fDens > 1.2;
+        const isSurface = fDens > 0.1 && fDens <= 1.2;
+        
+        if (isUnderwater) {
+            // Bubble behavior: strong buoyancy, follow fluid
+            foam_vy[i] -= GRAVITY_Y * 0.8 * dt; // rise up
+            // Drag towards fluid velocity
+            foam_vx[i] += (fvx - foam_vx[i]) * 5.0 * dt;
+            foam_vy[i] += (fvy - foam_vy[i]) * 5.0 * dt;
+            foam_life[i] -= dt * 0.15; // live longer underwater
+            // If it was a splash/surface, shrink it down to a bubble
+            if (foam_size[i] > 0.6) foam_size[i] -= dt * 1.5;
+        } else if (isSurface) {
+            // Surface foam: follow fluid strictly, neutral buoyancy
+            foam_vx[i] += (fvx - foam_vx[i]) * 8.0 * dt;
+            foam_vy[i] += (fvy - foam_vy[i]) * 8.0 * dt;
+            foam_vy[i] += GRAVITY_Y * 0.1 * dt; // slight gravity to stick to water
+            foam_life[i] -= dt * 0.25;
+            // Expand bubble to surface foam
+            if (foam_size[i] < 0.8) foam_size[i] += dt * 1.5;
+        } else {
+            // Spray (in air): full gravity, air drag
+            foam_vy[i] += GRAVITY_Y * dt;
+            foam_vx[i] *= 0.98;
+            foam_vy[i] *= 0.98;
+            foam_life[i] -= dt * 0.5; // die faster in air
+        }
+
         foam_x[i] += foam_vx[i] * dt;
         foam_y[i] += foam_vy[i] * dt;
-        foam_life[i] -= dt * 0.8;
 
         if (foam_life[i] <= 0 || foam_x[i] < 0 || foam_x[i] > width || foam_y[i] < 0 || foam_y[i] > height) {
             foamCount--;
@@ -1298,10 +1396,71 @@ function addParticles(count, startX, startY) {
 }
 
 // ==========================================
+// COUNTING SORT PAR CELL ID
+// Trie toutes les arrays de particules par cellule spatiale pour maximiser
+// la localité du cache lors des boucles de voisinage (density + forces).
+// O(N + K) avec K = cols*rows. Appelée entre les deux updateGrid() dans step().
+// ==========================================
+function sortParticlesByCell() {
+    const n = particleCount;
+    if (n === 0) return;
+
+    // Pass 1 : cell ID de chaque particule + comptage par cellule
+    const cellCount = cols * rows;
+    sort_count.fill(0, 0, cellCount);
+    for (let i = 0; i < n; i++) {
+        const cx = Math.max(0, Math.min(cols - 1, (p_x[i] / H) | 0));
+        const cy = Math.max(0, Math.min(rows - 1, (p_y[i] / H) | 0));
+        const cid = cx + cy * cols;
+        sort_cellIDs[i] = cid;
+        sort_count[cid]++;
+    }
+
+    // Pass 2 : prefix sum exclusif → index de départ pour chaque cellule
+    sort_prefix[0] = 0;
+    for (let c = 1; c < cellCount; c++) {
+        sort_prefix[c] = sort_prefix[c - 1] + sort_count[c - 1];
+    }
+
+    // Pass 3 : snapshot des sources (memcpy natif via TypedArray.set)
+    sort_x.set(p_x.subarray(0, n));
+    sort_y.set(p_y.subarray(0, n));
+    sort_vx.set(p_vx.subarray(0, n));
+    sort_vy.set(p_vy.subarray(0, n));
+    sort_fx.set(p_fx.subarray(0, n));
+    sort_fy.set(p_fy.subarray(0, n));
+    sort_density.set(p_density.subarray(0, n));
+    sort_nearDensity.set(p_nearDensity.subarray(0, n));
+    sort_pressure.set(p_pressure.subarray(0, n));
+    sort_nearPressure.set(p_nearPressure.subarray(0, n));
+    sort_frozen.set(p_frozen.subarray(0, n));
+    sort_teleportCD.set(p_teleportCD.subarray(0, n));
+
+    // Pass 4 : scatter — écriture dans l'ordre trié (stable, curseur par cellule)
+    for (let i = 0; i < n; i++) {
+        const dest = sort_prefix[sort_cellIDs[i]]++;
+        p_x[dest]             = sort_x[i];
+        p_y[dest]             = sort_y[i];
+        p_vx[dest]            = sort_vx[i];
+        p_vy[dest]            = sort_vy[i];
+        p_fx[dest]            = sort_fx[i];
+        p_fy[dest]            = sort_fy[i];
+        p_density[dest]       = sort_density[i];
+        p_nearDensity[dest]   = sort_nearDensity[i];
+        p_pressure[dest]      = sort_pressure[i];
+        p_nearPressure[dest]  = sort_nearPressure[i];
+        p_frozen[dest]        = sort_frozen[i];
+        p_teleportCD[dest]    = sort_teleportCD[i];
+    }
+}
+
+// ==========================================
 // PHYSICS STEP
 // ==========================================
 function step() {
-    updateGrid();
+    updateGrid();               // 1er passage : construit la grid pour connaître les cell IDs
+    sortParticlesByCell();      // trie toutes les arrays par cell ID (cache locality)
+    updateGrid();               // 2e passage : reconstruit la grid avec les indices triés
 
     if (useMultiWorker) {
         // Update shared parameters for sub-workers
@@ -1478,22 +1637,8 @@ self.onmessage = function(e) {
             rows = Math.ceil(height / H);
             initArrays();
             
-            // 1. Remplir l'écran de particules (Océan)
-            const spacing = PARTICLE_RADIUS * 2.1;
-            const columns = Math.floor(width / spacing);
-            const rowsCount = Math.floor(height / spacing);
-            const totalParticles = Math.min(columns * rowsCount, MAX_PARTICLES - 500);
-            
-            // Désactiver la gravité pour la vue de dessus avant de spawner
-            GRAVITY_Y = 0;
-            GRAVITY_X = 0;
-            
-            for (let i = 0; i < totalParticles; i++) {
-                p_x[i] = (i % columns) * spacing + spacing;
-                p_y[i] = Math.floor(i / columns) * spacing + spacing;
-                p_vx[i] = 0; p_vy[i] = 0;
-                particleCount++;
-            }
+            // 1. Spawner 10 000 particules
+            addParticles(10000, H, H);
 
             // 2. Placer le bateau au centre
             boat = {
@@ -1566,7 +1711,7 @@ self.onmessage = function(e) {
             }
             p_frozen.fill(0);
             p_teleportCD.fill(0);
-            addParticles(1800, width / 2 - 200, height / 4);
+            addParticles(10000, H, H);
             break;
 
         case 'addEmitter':
