@@ -12,6 +12,9 @@ import { Player } from './game/player.js'
 import { EnemyManager } from './game/enemy-manager.js'
 import { WaveManager } from './game/wave-manager.js'
 import { CombatSystem } from './game/combat-system.js'
+import { Progression } from './game/progression.js'
+import { LevelUpScreen } from './ui/levelup-screen.js'
+import { GameOver } from './ui/game-over.js'
 
 const container = document.getElementById('canvas-container')
 const simCanvas = document.getElementById('simCanvas')
@@ -57,6 +60,10 @@ gameLoop.setEnemyManager(enemyManager)
 gameLoop.setWaveManager(waveManager)
 gameLoop.setCombatSystem(combatSystem)
 
+const progression = new Progression(player, gameState)
+const levelUpScreen = new LevelUpScreen()
+const gameOver = new GameOver(gameState, player)
+
 EventBus.on('enemy:died', ({ xpReward }) => {
   player.gainXP(xpReward)
   player.score += xpReward * 10
@@ -82,11 +89,18 @@ EventBus.on('game:start', () => {
   hud.reset()
   waveManager.reset()
   combatSystem.reset()
+  progression.reset()
   waveManager.start()
   gameState.start()
   // Ensure options overlay is hidden
   document.getElementById('options-overlay').classList.add('hidden')
+  // Reset and seed the fluid simulation
+  worker.postMessage({ type: 'reset' })
+  worker.postMessage({ type: 'addParticles', count: 1200 })
 })
+
+// Wire game:restart (fired by GameOver "Rejouer" button)
+EventBus.on('game:restart', () => { EventBus.emit('game:start') })
 
 // Resize
 let resizeTimeout
