@@ -268,7 +268,7 @@ function initSubWorkers() {
     const sliceSize = Math.ceil(MAX_PARTICLES / numSubWorkers);
 
     for (let w = 0; w < numSubWorkers; w++) {
-        const worker = new Worker('js/sub-worker.js');
+        const worker = new Worker('js/core/sub-worker.js');
         worker.onmessage = function(e) {
             if (e.data.type === 'ready') {
                 subWorkersReady++;

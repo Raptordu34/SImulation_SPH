@@ -1,9 +1,9 @@
 // ==========================================
 // MAIN - Point d'entrée et orchestration
 // ==========================================
-import { Renderer } from './renderer.js';
+import { Renderer } from './core/renderer.js';
 import { ToolManager } from './tools.js';
-import { Recorder } from './recorder.js';
+import { Recorder } from './engine/recorder.js';
 import { UI } from './ui.js';
 import { BoatControls } from './boat-controls.js';
 
@@ -53,7 +53,7 @@ try {
 // ==========================================
 // WEB WORKER
 // ==========================================
-const worker = new Worker('js/physics-worker.js');
+const worker = new Worker('js/core/physics-worker.js');
 
 // Initialize worker
 worker.postMessage({
