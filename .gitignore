@@ -1,0 +1,14 @@
+# ai-context-orchestrator
+.ai-orchestrator/session.json
+.ai-orchestrator/stages/
+.ai-orchestrator/history/
+.ai-context.md
+
+# VSCode AI Orchestrator
+/stage/
+/.claude/
+/.gemini/
+/.github/agents/
+/.ai-orchestrator/
+/.orchestrator/
+/.ai-context.md
