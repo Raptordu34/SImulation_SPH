@@ -62,7 +62,7 @@ gameLoop.setCombatSystem(combatSystem)
 
 const progression = new Progression(player, gameState)
 const levelUpScreen = new LevelUpScreen()
-const gameOver = new GameOver(gameState, player)
+const gameOver = new GameOver(gameState, player, waveManager)
 
 EventBus.on('enemy:died', ({ xpReward }) => {
   player.gainXP(xpReward)

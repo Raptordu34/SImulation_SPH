@@ -48,6 +48,7 @@ export class ToolManager {
 
         // Enemy / combat state (fed from main.js each frame)
         this.enemiesData = [];
+        this.enemyBoats = [];
         this.playerHP = 100;
         this.playerMaxHP = 100;
         this.playerScore = 0;
@@ -1008,6 +1009,15 @@ export class ToolManager {
         }
 
         // ==========================================
+        // ENEMY BOATS (from physics worker frameData)
+        // ==========================================
+        if (this.enemyBoats && this.enemyBoats.length > 0) {
+            for (const eb of this.enemyBoats) {
+                this._drawEnemyBoat(ctx, eb);
+            }
+        }
+
+        // ==========================================
         // HUD: HP BAR + XP BAR + LEVEL + SCORE
         // ==========================================
         if (this.boatData) {
@@ -1193,6 +1203,24 @@ export class ToolManager {
         if (this.mouseOver) {
             this._drawToolCursor(ctx);
         }
+    }
+
+    _drawEnemyBoat(ctx, eb) {
+        ctx.save();
+        ctx.translate(eb.x, eb.y);
+        ctx.rotate(eb.angle + Math.PI / 2);
+        // Simple enemy boat shape (red triangle)
+        ctx.beginPath();
+        ctx.moveTo(0, -16);
+        ctx.lineTo(-10, 12);
+        ctx.lineTo(10, 12);
+        ctx.closePath();
+        ctx.fillStyle = '#ef4444';
+        ctx.fill();
+        ctx.strokeStyle = '#fca5a5';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
     }
 
     _drawPortal(ctx, x, y, colorBase, phase) {

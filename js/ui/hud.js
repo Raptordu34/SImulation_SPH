@@ -5,6 +5,7 @@ export class HUD {
   #ctx
   #canvas
   #gameState
+  #waveBanner = null  // { wave, age, maxAge }
 
   // Shared game data (updated by game systems via EventBus or direct reference)
   data = {
@@ -32,7 +33,11 @@ export class HUD {
       this.data.xp = xp; this.data.xpToNext = xpToNext
     })
     EventBus.on('player:leveled-up', ({ level }) => { this.data.level = level })
-    EventBus.on('wave:started', ({ wave }) => { this.data.wave = wave; this.data.gameTime = 0 })
+    EventBus.on('wave:started', ({ wave }) => {
+      this.data.wave = wave
+      this.data.gameTime = 0
+      this.#waveBanner = { wave, age: 0, maxAge: 2.5 }
+    })
     EventBus.on('enemy:spawned', ({ id }) => {
       // HP data populated later by EnemyManager
     })
@@ -43,6 +48,11 @@ export class HUD {
     if (this.#gameState.current !== States.PLAYING && this.#gameState.current !== States.LEVELUP) return
     if (this.#gameState.current === States.PLAYING) {
       this.data.gameTime += dt
+    }
+    // Update wave banner timer
+    if (this.#waveBanner) {
+      this.#waveBanner.age += dt
+      if (this.#waveBanner.age >= this.#waveBanner.maxAge) this.#waveBanner = null
     }
     this.#drawHUD(this.#ctx, this.#canvas.width, this.#canvas.height)
   }
@@ -74,6 +84,20 @@ export class HUD {
     // Enemy HP bars (above each enemy boat)
     if (this.data.enemyBoats.length > 0) {
       this.#drawEnemyBars(ctx)
+    }
+
+    // Wave announcement banner
+    if (this.#waveBanner && this.#waveBanner.age < this.#waveBanner.maxAge) {
+      const alpha = 1 - (this.#waveBanner.age / this.#waveBanner.maxAge)
+      ctx.save()
+      ctx.globalAlpha = alpha
+      ctx.font = 'bold 56px monospace'
+      ctx.fillStyle = '#fbbf24'
+      ctx.textAlign = 'center'
+      ctx.shadowColor = 'rgba(0,0,0,0.8)'
+      ctx.shadowBlur = 8
+      ctx.fillText(`VAGUE ${this.#waveBanner.wave}`, w / 2, h / 2 - 40)
+      ctx.restore()
     }
   }
 
@@ -142,5 +166,6 @@ export class HUD {
     this.data.gameTime = 0
     this.data.enemyBoats = []
     this.data.enemyHPs.clear()
+    this.#waveBanner = null
   }
 }

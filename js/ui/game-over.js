@@ -5,10 +5,12 @@ export class GameOver {
   #overlay = null
   #gameState = null
   #player = null
+  #waveManager = null
 
-  constructor(gameState, player) {
+  constructor(gameState, player, waveManager) {
     this.#gameState = gameState
     this.#player = player
+    this.#waveManager = waveManager ?? null
     this.#create()
 
     EventBus.on('player:died', () => {
@@ -53,7 +55,7 @@ export class GameOver {
 
   #show() {
     const score = this.#player.score
-    const wave = this.#player.level  // approximate — could use waveManager but keep simple
+    const wave = this.#waveManager?.currentWave || this.#player.level
 
     // Best score from localStorage
     const bestKey = 'naval-survivors-best'
@@ -62,7 +64,7 @@ export class GameOver {
     const displayBest = Math.max(score, best)
 
     document.getElementById('go-score').textContent = `Score : ${score}`
-    document.getElementById('go-wave').textContent = `Niveau ${this.#player.level}`
+    document.getElementById('go-wave').textContent = `Vague ${wave}`
     document.getElementById('go-best').textContent = `Meilleur score : ${displayBest}`
 
     this.#overlay.classList.remove('hidden')
