@@ -27,6 +27,20 @@ export class CombatSystem {
       p.age += dt
     }
 
+    // Homing: recalculate direction toward target each frame
+    for (const p of this.projectiles) {
+      if (!p.targetId || p.age >= p.maxAge) continue
+      const target = frameData.enemyBoats?.find(eb => eb.id === p.targetId)
+      if (!target) continue
+      const dx = target.x - p.x
+      const dy = target.y - p.y
+      const dist = Math.hypot(dx, dy)
+      if (dist < 1) continue
+      const speed = Math.hypot(p.vx, p.vy)
+      p.vx = (dx / dist) * speed
+      p.vy = (dy / dist) * speed
+    }
+
     // Check projectile → enemy collisions
     this.#checkProjectileHits(frameData)
 
@@ -70,10 +84,10 @@ export class CombatSystem {
     if (weaponId === 'dualgun') {
       // Two projectiles with slight spread
       const spread = 0.12
-      this.projectiles.push({ x: boat.x, y: boat.y, vx: vx * Math.cos(spread) - vy * Math.sin(spread), vy: vx * Math.sin(spread) + vy * Math.cos(spread), damage, radius: 5, age: 0, maxAge: 3 })
-      this.projectiles.push({ x: boat.x, y: boat.y, vx: vx * Math.cos(-spread) - vy * Math.sin(-spread), vy: vx * Math.sin(-spread) + vy * Math.cos(-spread), damage, radius: 5, age: 0, maxAge: 3 })
+      this.projectiles.push({ x: boat.x, y: boat.y, vx: vx * Math.cos(spread) - vy * Math.sin(spread), vy: vx * Math.sin(spread) + vy * Math.cos(spread), damage, radius: 5, age: 0, maxAge: 3, targetId: target.id })
+      this.projectiles.push({ x: boat.x, y: boat.y, vx: vx * Math.cos(-spread) - vy * Math.sin(-spread), vy: vx * Math.sin(-spread) + vy * Math.cos(-spread), damage, radius: 5, age: 0, maxAge: 3, targetId: target.id })
     } else {
-      this.projectiles.push({ x: boat.x, y: boat.y, vx, vy, damage, radius: 5, age: 0, maxAge: 3 })
+      this.projectiles.push({ x: boat.x, y: boat.y, vx, vy, damage, radius: 5, age: 0, maxAge: 3, targetId: target.id })
     }
   }
 

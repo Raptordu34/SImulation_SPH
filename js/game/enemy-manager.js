@@ -27,7 +27,7 @@ export class EnemyManager {
       while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI
       while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI
       // Steering: proportional to angle difference, clamped
-      const steerStrength = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff) / Math.PI, 1.0) * 0.08
+      const steerStrength = Math.sign(angleDiff) * Math.min(Math.abs(angleDiff) / Math.PI, 1.0) * 3.0
       commands.push({
         id: eb.id,
         thrust: dist > 60 ? 0.7 : 0.2,  // slow down when close
