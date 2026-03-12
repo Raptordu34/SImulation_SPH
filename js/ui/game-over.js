@@ -29,7 +29,7 @@ export class GameOver {
     const el = document.createElement('div')
     el.id = 'game-over-overlay'
     el.classList.add('hidden')
-    el.style.cssText = 'position:absolute;inset:0;z-index:70;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);backdrop-filter:blur(8px);'
+    el.style.cssText = 'position:absolute;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);backdrop-filter:blur(8px);'
     el.innerHTML = `
       <div style="text-align:center;color:#e2e8f0;padding:32px;">
         <h2 style="font-size:3.5rem;font-weight:900;color:#ef4444;margin-bottom:8px;text-shadow:0 0 30px rgba(239,68,68,0.5);">Game Over</h2>
