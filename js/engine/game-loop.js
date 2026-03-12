@@ -109,7 +109,7 @@ export class GameLoop {
     if (fd) {
       this.#toolManager.rigidBodiesData = fd.rigidBodies
       this.#toolManager.rigidBodyCount = fd.rigidBodyCount ?? 0
-      this.#toolManager.boatData = fd.boat ?? null
+      this.#toolManager.boatData = this.#currentState === 'MENU' ? null : (fd.boat ?? null)
       this.#toolManager.enemyBoats = fd.enemyBoats ?? []
     }
     this.#toolManager.renderOverlay(dt)

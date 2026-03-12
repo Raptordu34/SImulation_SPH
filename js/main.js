@@ -97,6 +97,7 @@ EventBus.on('game:start', () => {
   // Reset and seed the fluid simulation
   worker.postMessage({ type: 'reset' })
   worker.postMessage({ type: 'addParticles', count: 1200 })
+  worker.postMessage({ type: 'placeBoat' })
 })
 
 // Wire game:restart (fired by GameOver "Rejouer" button)
